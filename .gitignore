@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Env & secrets
+.env
+.env.*
+!../tulahack-2026 copy/.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# Logs & uploads (local dev)
+uploads/
+*.log
+
+# Frontend
+frontend/dist/
+frontend/.vite/
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
