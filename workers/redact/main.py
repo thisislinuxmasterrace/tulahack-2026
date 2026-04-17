@@ -90,11 +90,23 @@ def export_format_and_mime(filename: str | None, content_type: str | None) -> tu
     return "wav", "audio/wav", {}
 
 
+def _end_pad_ms() -> int:
+    """Доп. миллисекунды к концу каждого span (после LLM), если в пике всё ещё слышна часть цифры."""
+    try:
+        return max(0, int(os.getenv("REDACT_END_PAD_MS", "80")))
+    except ValueError:
+        return 80
+
+
 def apply_beep(audio: AudioSegment, spans: list[dict[str, Any]], freq: int = 1000, gain_db: int = -5) -> AudioSegment:
+    pad = _end_pad_ms()
+    audio_len = len(audio)
     spans = sorted(spans, key=lambda x: int(x.get("start_ms", 0)), reverse=True)
     for span in spans:
         start = int(span.get("start_ms", 0))
         end = int(span.get("end_ms", 0))
+        if pad:
+            end = min(audio_len, end + pad)
         duration = end - start
         if duration <= 0:
             continue

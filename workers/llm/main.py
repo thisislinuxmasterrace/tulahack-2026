@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from typing import Annotated, Any, Optional
@@ -151,11 +152,21 @@ def _local_span_to_times_in_segment(seg: SegmentIn, la: int, lb: int) -> tuple[f
 
 
 def _redaction_end_pad_sec() -> float:
+    """Запас на конце интервала: Whisper часто заканчивает слово раньше реального затухания в аудио."""
     try:
-        ms = int(os.getenv("REDACTION_END_MS_PAD", "120"))
+        ms = int(os.getenv("REDACTION_END_MS_PAD", "250"))
     except ValueError:
-        ms = 120
+        ms = 250
     return max(0, ms) / 1000.0
+
+
+def _ms_from_sec_start(t: float) -> int:
+    return max(0, int(math.floor(t * 1000 + 1e-9)))
+
+
+def _ms_from_sec_end(t: float) -> int:
+    # int(t*1000) режет хвост (напр. 8.88*1000 → 8879); для конца цензуры нужен ceil
+    return max(0, int(math.ceil(t * 1000 - 1e-9)))
 
 
 def _char_span_to_time(segments: list[SegmentIn], full_text: str, cs: int, ce: int) -> tuple[float, float]:
@@ -336,6 +347,10 @@ def _normalize_entities(
             continue
         cs, ce = idx, idx + len(needle)
         t0, t1 = _char_span_to_time(segments, full_text, cs, ce)
+        start_ms = _ms_from_sec_start(t0)
+        end_ms = _ms_from_sec_end(t1)
+        if end_ms <= start_ms:
+            end_ms = start_ms + 1
         out.append(
             {
                 "entity_type": et,
@@ -345,8 +360,8 @@ def _normalize_entities(
                 "end_char": ce,
                 "start_sec": round(t0, 3),
                 "end_sec": round(t1, 3),
-                "start_ms": int(t0 * 1000),
-                "end_ms": int(t1 * 1000),
+                "start_ms": start_ms,
+                "end_ms": end_ms,
             }
         )
     return out
