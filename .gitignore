@@ -12,8 +12,6 @@ build/
 
 # Env & secrets
 .env
-.env.*
-!../tulahack-2026 copy/.env.example
 
 # IDE
 .idea/
