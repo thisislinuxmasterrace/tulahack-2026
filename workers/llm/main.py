@@ -52,7 +52,7 @@ class SegmentIn(BaseModel):
 
 
 class AnonymizeRequest(BaseModel):
-    """Тело как у ответа STT: text + segments (таймкоды)."""
+    """Формат как у ответа STT: поля text и segments с таймкодами."""
 
     text: str = ""
     segments: Optional[list[SegmentIn]] = None
@@ -64,7 +64,7 @@ def _full_text_from_segments(segments: list[SegmentIn]) -> str:
 
 
 def _segment_char_ranges(segments: list[SegmentIn]) -> list[tuple[int, int, float, float]]:
-    """Для каждого сегмента: [char_start, char_end), start_sec, end_sec."""
+    """По каждому сегменту: интервал символов [start, end) во всём тексте и границы времени в секундах."""
     ranges: list[tuple[int, int, float, float]] = []
     pos = 0
     for i, s in enumerate(segments):
@@ -79,17 +79,102 @@ def _segment_char_ranges(segments: list[SegmentIn]) -> list[tuple[int, int, floa
     return ranges
 
 
+def _segment_char_ranges_with_ref(segments: list[SegmentIn]) -> list[tuple[int, int, SegmentIn]]:
+    """Как _segment_char_ranges, но с объектом сегмента для привязки слов."""
+    ranges: list[tuple[int, int, SegmentIn]] = []
+    pos = 0
+    for i, s in enumerate(segments):
+        t = s.text.strip()
+        if not t:
+            continue
+        if i > 0 and ranges:
+            pos += 1
+        start_c = pos
+        pos += len(t)
+        ranges.append((start_c, pos, s))
+    return ranges
+
+
+def _word_local_char_ranges(seg: SegmentIn) -> list[tuple[int, int, float, float]] | None:
+    """Позиции слов в локальных координатах seg.text.strip(); None если слова не совпали с текстом."""
+    seg_text = seg.text.strip()
+    if not seg_text or not seg.words:
+        return None
+    pos = 0
+    ranges: list[tuple[int, int, float, float]] = []
+    first = True
+    for w in seg.words:
+        tok = (w.word or "").strip()
+        if not tok:
+            continue
+        if not first:
+            pos += 1
+        first = False
+        ws = pos
+        pos += len(tok)
+        ranges.append((ws, pos, float(w.start), float(w.end)))
+    if pos != len(seg_text):
+        return None
+    return ranges
+
+
+def _local_span_to_times_in_segment(seg: SegmentIn, la: int, lb: int) -> tuple[float, float]:
+    """Интервал времени для [la, lb) в координатах seg.text.strip()."""
+    seg_text = seg.text.strip()
+    if not seg_text:
+        return float(seg.start), float(seg.end)
+    la = max(0, min(la, len(seg_text)))
+    lb = max(0, min(lb, len(seg_text)))
+    if lb <= la:
+        return float(seg.start), float(seg.end)
+    wr = _word_local_char_ranges(seg)
+    if wr:
+        t0: float | None = None
+        t1: float | None = None
+        for ws, we, st, en in wr:
+            if we <= la or ws >= lb:
+                continue
+            if t0 is None:
+                t0, t1 = st, en
+            else:
+                t0 = min(t0, st)
+                t1 = max(t1, en)
+        if t0 is not None and t1 is not None:
+            return t0, t1
+    seg_len = len(seg_text)
+    seg_dur = float(seg.end) - float(seg.start)
+    if seg_len <= 0 or seg_dur <= 0:
+        return float(seg.start), float(seg.end)
+    st = float(seg.start) + (la / seg_len) * seg_dur
+    en = float(seg.start) + (lb / seg_len) * seg_dur
+    return st, en
+
+
+def _redaction_end_pad_sec() -> float:
+    try:
+        ms = int(os.getenv("REDACTION_END_MS_PAD", "120"))
+    except ValueError:
+        ms = 120
+    return max(0, ms) / 1000.0
+
+
 def _char_span_to_time(segments: list[SegmentIn], full_text: str, cs: int, ce: int) -> tuple[float, float]:
+    """Время по пересечению span с сегментами; внутри сегмента — по словам Whisper, иначе пропорционально."""
     if not segments or ce <= cs:
         return 0.0, 0.0
-    ranges = _segment_char_ranges(segments)
-    if not ranges:
+    pairs = _segment_char_ranges_with_ref(segments)
+    if not pairs:
         return 0.0, 0.0
     t0: float | None = None
     t1: float | None = None
-    for seg_start, seg_end, st, en in ranges:
-        if seg_end <= cs or seg_start >= ce:
+    for g_s, g_e, seg in pairs:
+        if g_e <= cs or g_s >= ce:
             continue
+        overlap_left = max(cs, g_s)
+        overlap_right = min(ce, g_e)
+        la = overlap_left - g_s
+        lb = overlap_right - g_s
+        st, en = _local_span_to_times_in_segment(seg, la, lb)
         if t0 is None:
             t0, t1 = st, en
         else:
@@ -97,11 +182,12 @@ def _char_span_to_time(segments: list[SegmentIn], full_text: str, cs: int, ce: i
             t1 = max(t1, en)
     if t0 is None or t1 is None:
         return 0.0, 0.0
+    t1 = t1 + _redaction_end_pad_sec()
     return t0, t1
 
 
 def _apply_redactions(text: str, entities: list[dict[str, Any]]) -> str:
-    """Замены справа налево по позициям в тексте."""
+    """Подстановка replacement с конца строки, чтобы не сбить индексы при нескольких заменах."""
     spans: list[tuple[int, int, str]] = []
     for e in entities:
         orig = e.get("original")
@@ -141,7 +227,7 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
     raise ValueError("no JSON object in model output")
 
 
-# TODO защита от prompt injection??
+# Упрощённый сценарий: весь текст в промпте; в проде нужны лимиты и защита от prompt injection.
 def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, str]]:
     lang = language or "ru"
     system = (
@@ -150,14 +236,14 @@ def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, 
     )
     user = f"""Язык текста: {lang}.
 
-Текст расшифровки:
+Текст расшифровки (это полный текст; дальше по нему же считаются позиции для озвучки):
 \"\"\"{user_text}\"\"\"
 
-Найди все фрагменты, относящиеся к категориям (entity_type строго латиницей):
-- passport — паспорт, серия/номер, паспортные данные
-- inn — ИНН
+Найди все фрагменты по категориям (entity_type только латиницей):
+- passport — серия и номер паспорта (цифры, дефисы; часто «988» и «-032» рядом)
+- inn — ИНН (10 или 12 цифр)
 - snils — СНИЛС
-- phone — телефоны
+- phone — телефон (в т.ч. «+7», группы цифр)
 - email — email
 - address — адрес (улица, дом, квартира и т.п.)
 
@@ -166,16 +252,19 @@ def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, 
   "entities": [
     {{
       "entity_type": "passport|inn|snils|phone|email|address",
-      "original": "точная цитата из текста выше",
+      "original": "минимальная дословная подстрока из текста выше",
       "replacement": "краткая маска на русском, например [ПАСПОРТ]"
     }}
   ],
   "transcript_redacted": "весь текст с подставленными replacement вместо чувствительных фрагментов"
 }}
 
-Правила:
-- original должен дословно встречаться в тексте (скопируй подстроку).
-- Не выдумывай данные; если сомневаешься — не включай.
+Правила для original (важно для точной подстановки звука):
+- Должен дословно совпадать с подстрокой текста выше.
+- Делай original максимально коротким: только сами ПДн (цифры, дефисы, при необходимости одно слово-метка), без приветствий и без лишних слов («добрый день», «уточнить» и т.п.).
+- passport: только серия/номер как в тексте (например «988 032»), не целое предложение и не «паспорт номер …», если в тексте номер уже выделен отдельно.
+- inn / phone: по возможности только цифры и знаки номера; для телефона сохраняй «Плюс»/«+» только если так в тексте.
+- Не дублируй одно и то же; не выдумывай; при сомнении не включай.
 - transcript_redacted — полная анонимизированная версия исходного текста."""
     return [
         {"role": "system", "content": system},
@@ -218,12 +307,12 @@ async def _call_lm_studio(messages: list[dict[str, str]]) -> str:
     return content
 
 
-# ааааааааааааааааааааааа
 def _normalize_entities(
     raw_entities: list[Any],
     full_text: str,
     segments: list[SegmentIn],
 ) -> list[dict[str, Any]]:
+    """Нормализует entities из JSON модели: границы в тексте и интервалы времени по сегментам STT."""
     out: list[dict[str, Any]] = []
     for item in raw_entities:
         if not isinstance(item, dict):
@@ -287,7 +376,7 @@ def _redaction_report(entities: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _redact_segment_text(seg_text: str, entities: list[dict[str, Any]]) -> str:
-    """Подстрочные замены по original_text, попавшим в сегмент."""
+    """Маскирование в тексте сегмента по полям original_text сущностей, попавшим в эту подстроку."""
     t = seg_text
     relevant = []
     for e in entities:
@@ -315,7 +404,7 @@ async def anonymize(
     if segments:
         rebuilt = _full_text_from_segments(segments)
         if rebuilt:
-            # Как в STT: склейка через пробел — совпадает с полем text у Whisper.
+            # Склейка сегментов пробелом — как у aggregate text в faster-whisper.
             full_text = rebuilt
     elif not full_text:
         raise HTTPException(status_code=400, detail="empty transcript")
