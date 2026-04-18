@@ -1,7 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-/** Локальная разработка: запросы к `/api` проксируются на шлюз (порт по умолчанию — как у gateway). */
 export default defineConfig({
   plugins: [vue()],
   server: {

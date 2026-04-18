@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 
 import type { TimelineRedaction } from '../../mocks/demoSession'
 
@@ -7,15 +7,39 @@ const props = defineProps<{
   fileName: string
   durationSec: number
   redactions: TimelineRedaction[]
+  audioSrc?: string | null
 }>()
 
-/** Доля длительности 0..1 для индикатора на шкале (без реального аудио). */
-const progress = ref(0.35)
+const audioRef = ref<HTMLAudioElement | null>(null)
+const mediaDurationSec = ref(0)
+const progress = ref(0)
 const playing = ref(false)
 let raf = 0
 
-const currentLabel = computed(() => formatTime(progress.value * props.durationSec))
-const totalLabel = computed(() => formatTime(props.durationSec))
+const live = computed(() => !!(props.audioSrc && props.audioSrc.length > 0))
+
+const currentLabel = computed(() => formatTime(progress.value * effectiveDuration.value))
+const totalLabel = computed(() => formatTime(effectiveDuration.value))
+
+const effectiveDuration = computed(() => {
+  if (mediaDurationSec.value > 0) {
+    return mediaDurationSec.value
+  }
+  const el = audioRef.value
+  if (live.value && el && el.duration && !Number.isNaN(el.duration) && el.duration > 0 && el.duration !== Number.POSITIVE_INFINITY) {
+    return el.duration
+  }
+  return Math.max(0.1, props.durationSec)
+})
+
+function syncDurationFromElement() {
+  const el = audioRef.value
+  if (!el) return
+  const d = el.duration
+  if (typeof d === 'number' && !Number.isNaN(d) && d > 0 && d !== Number.POSITIVE_INFINITY) {
+    mediaDurationSec.value = d
+  }
+}
 
 function formatTime(sec: number): string {
   const s = Math.floor(sec % 60)
@@ -23,27 +47,117 @@ function formatTime(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-function tick() {
+function tickMock() {
   if (!playing.value) return
   progress.value = (progress.value + 0.002) % 1
-  raf = requestAnimationFrame(tick)
+  raf = requestAnimationFrame(tickMock)
 }
 
 function togglePlay() {
-  playing.value = !playing.value
-  if (playing.value) {
-    cancelAnimationFrame(raf)
-    tick()
+  if (live.value) {
+    const el = audioRef.value
+    if (!el) return
+    if (playing.value) {
+      el.pause()
+    } else {
+      void el.play()
+    }
   } else {
-    cancelAnimationFrame(raf)
+    playing.value = !playing.value
+    if (playing.value) {
+      cancelAnimationFrame(raf)
+      tickMock()
+    } else {
+      cancelAnimationFrame(raf)
+    }
   }
 }
+
+function onTimeUpdate() {
+  const el = audioRef.value
+  if (!el || !el.duration || el.duration <= 0) return
+  if (mediaDurationSec.value <= 0) {
+    syncDurationFromElement()
+  }
+  progress.value = el.currentTime / el.duration
+}
+
+function onLoadedMetadata() {
+  syncDurationFromElement()
+  const el = audioRef.value
+  if (el && el.duration > 0) {
+    progress.value = el.currentTime / el.duration
+  }
+}
+
+function onDurationChange() {
+  syncDurationFromElement()
+}
+
+function onPlay() {
+  playing.value = true
+}
+
+function onPause() {
+  playing.value = false
+}
+
+function onEnded() {
+  playing.value = false
+  progress.value = 0
+}
+
+function seekClientX(clientX: number, el: HTMLElement) {
+  const rect = el.getBoundingClientRect()
+  const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+  progress.value = ratio
+  const a = audioRef.value
+  if (live.value && a && a.duration) {
+    a.currentTime = ratio * a.duration
+  }
+}
+
+function onTimelinePointerDown(e: PointerEvent) {
+  const target = e.currentTarget as HTMLElement
+  target.setPointerCapture(e.pointerId)
+  seekClientX(e.clientX, target)
+}
+
+function onTimelinePointerMove(e: PointerEvent) {
+  const target = e.currentTarget as HTMLElement
+  if (!target.hasPointerCapture(e.pointerId)) return
+  seekClientX(e.clientX, target)
+}
+
+watch(
+  () => props.audioSrc,
+  () => {
+    playing.value = false
+    progress.value = 0
+    mediaDurationSec.value = 0
+    cancelAnimationFrame(raf)
+  },
+)
 
 onUnmounted(() => cancelAnimationFrame(raf))
 </script>
 
 <template>
   <div class="player">
+    <audio
+      v-if="live"
+      ref="audioRef"
+      class="player__audio"
+      :src="audioSrc || undefined"
+      preload="metadata"
+      @timeupdate="onTimeUpdate"
+      @loadedmetadata="onLoadedMetadata"
+      @durationchange="onDurationChange"
+      @play="onPlay"
+      @pause="onPause"
+      @ended="onEnded"
+    />
+
     <div class="player__row">
       <button type="button" class="player__play" :aria-pressed="playing" @click="togglePlay">
         <span class="sr-only">{{ playing ? 'Пауза' : 'Воспроизвести' }}</span>
@@ -61,7 +175,17 @@ onUnmounted(() => cancelAnimationFrame(raf))
     </div>
 
     <div class="player__timeline-wrap">
-      <div class="player__timeline" role="img" aria-label="Разметка редактирования по времени">
+      <div
+        class="player__timeline"
+        role="slider"
+        :aria-valuemin="0"
+        :aria-valuemax="100"
+        :aria-valuenow="Math.round(progress * 100)"
+        aria-label="Позиция воспроизведения"
+        tabindex="0"
+        @pointerdown="onTimelinePointerDown"
+        @pointermove="onTimelinePointerMove"
+      >
         <div
           v-for="(z, i) in redactions"
           :key="i"
@@ -82,6 +206,14 @@ onUnmounted(() => cancelAnimationFrame(raf))
 </template>
 
 <style scoped>
+.player__audio {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .player__row {
   display: flex;
   align-items: center;
@@ -150,6 +282,13 @@ onUnmounted(() => cancelAnimationFrame(raf))
   background: var(--bg-muted);
   border: 1px solid var(--border);
   overflow: hidden;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.player__timeline:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
 }
 
 .player__zone {

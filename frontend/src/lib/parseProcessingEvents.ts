@@ -6,7 +6,6 @@ function isLevel(s: string): s is ProcessingLogLevel {
   return LEVELS.has(s as ProcessingLogLevel)
 }
 
-/** Разбор processing_events из JSON API в типизированный список. */
 export function parseProcessingLogEntries(raw: unknown): ProcessingLogEntry[] {
   if (!Array.isArray(raw)) return []
   const out: ProcessingLogEntry[] = []

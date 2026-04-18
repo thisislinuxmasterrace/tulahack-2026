@@ -303,7 +303,6 @@ def run_stt(
             r = client.post(
                 url,
                 files=files,
-                headers=auth_headers(settings),
                 timeout=settings.stt_timeout_sec,
             )
         r.raise_for_status()
@@ -328,7 +327,6 @@ def run_llm(
         r = client.post(
             url,
             json=body,
-            headers=auth_headers(settings),
             timeout=settings.llm_timeout_sec,
         )
         r.raise_for_status()
@@ -356,7 +354,6 @@ def run_redact(
                 url,
                 files=files,
                 data=data,
-                headers=auth_headers(settings),
                 timeout=settings.redact_timeout_sec,
             )
         r.raise_for_status()
@@ -618,10 +615,19 @@ def main() -> None:
     settings = load_settings()
     _require_worker_urls(settings)
     LOG.info("runner starting, queue=%s", settings.queue_key)
+    if settings.worker_token:
+        LOG.info("WORKER_TOKEN задан — к воркерам уйдёт Authorization: Bearer …")
+    else:
+        LOG.warning(
+            "WORKER_TOKEN пуст: запросы к STT/LLM/Redact без Authorization. "
+            "Если на воркерах задан WORKER_TOKEN, положите тот же секрет в env runner "
+            "(docker-compose: WORKER_TOKEN в .env)."
+        )
 
     r = redis.from_url(settings.redis_url, decode_responses=True)
     mc = minio_client(settings)
-    with psycopg.connect(settings.database_url) as pg, httpx.Client() as http:
+    worker_headers = auth_headers(settings)
+    with psycopg.connect(settings.database_url) as pg, httpx.Client(headers=worker_headers) as http:
         while True:
             try:
                 item = r.brpop(settings.queue_key, timeout=settings.brpop_timeout_sec)

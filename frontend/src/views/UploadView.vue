@@ -14,8 +14,6 @@ const fileName = ref<string | null>(null)
 const fileRef = ref<File | null>(null)
 const note = ref('')
 const loading = ref(false)
-const resultUrl = ref<string | null>(null)
-const queueInfo = ref<string | null>(null)
 
 function onDrop(e: DragEvent) {
   e.preventDefault()
@@ -33,8 +31,6 @@ function onFile(e: Event) {
 function pickFile(f: File) {
   fileName.value = f.name
   fileRef.value = f
-  resultUrl.value = null
-  queueInfo.value = null
   note.value = ''
 }
 
@@ -46,25 +42,20 @@ async function upload() {
   }
   note.value = ''
   loading.value = true
-  resultUrl.value = null
-  queueInfo.value = null
   try {
     const data = await uploadAudio(f)
-    resultUrl.value = data.upload.storage_url
     const uploadId = data.upload.id
     if (uploadId) {
       router.push({ name: 'result', params: { uploadId } })
     }
     const q = data.queue
     if (q.enqueued) {
-      queueInfo.value = 'Файл принят, обработка поставлена в очередь.'
-      note.value = 'Скоро откроется страница с ходом обработки.'
+      note.value = 'Файл принят, открываем страницу обработки…'
     } else if (q.reason === 'redis_disabled') {
-      queueInfo.value = 'Файл сохранён.'
-      note.value = 'Очередь обработки на стороне сервиса сейчас не используется — обратитесь к администратору, если обработка не начинается.'
+      note.value =
+        'Файл сохранён. Очередь обработки сейчас отключена — обратитесь к администратору, если задача не появится.'
     } else if (q.error) {
-      queueInfo.value = 'Не удалось поставить задачу в очередь.'
-      note.value = `Файл сохранён. ${q.error}. Если проблема повторяется, обратитесь к администратору.`
+      note.value = `Файл сохранён, но очередь недоступна: ${q.error}`
     } else {
       note.value = 'Файл сохранён.'
     }
@@ -104,7 +95,11 @@ async function upload() {
             accept="audio/*,.wav,.mp3,.ogg,.webm"
             @change="onFile"
           />
-          <span class="drop__icon" aria-hidden="true">⬆</span>
+          <span class="drop__icon" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+              <path d="M12 5v11m0 0l-3.5-3.5M12 16l3.5-3.5M5 19h14" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
           <span class="drop__title">Перетащите аудио сюда</span>
           <span class="drop__sub">или нажмите, чтобы выбрать файл</span>
         </label>
@@ -114,13 +109,6 @@ async function upload() {
         Выбрано: <strong>{{ fileName }}</strong>
       </p>
       <p v-if="note" class="upload__note">{{ note }}</p>
-
-      <div v-if="resultUrl" class="upload__result">
-        <p class="upload__result-title">Ссылка на сохранённый файл</p>
-        <code class="upload__code">{{ resultUrl }}</code>
-        <p v-if="queueInfo" class="upload__queue">{{ queueInfo }}</p>
-        <p class="upload__hint">Если ссылка не открывается в браузере, попробуйте позже или обратитесь в поддержку.</p>
-      </div>
 
       <div class="upload__row">
         <UiButton type="button" variant="primary" :disabled="loading || !fileRef" @click="upload">
@@ -169,8 +157,9 @@ async function upload() {
 }
 
 .drop__icon {
-  font-size: 1.5rem;
-  opacity: 0.75;
+  display: flex;
+  color: var(--accent);
+  opacity: 0.85;
 }
 
 .drop__title {
@@ -198,45 +187,6 @@ async function upload() {
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.45;
-}
-
-.upload__result {
-  margin-top: 1rem;
-  padding: 0.85rem 1rem;
-  border-radius: var(--radius-sm);
-  background: var(--bg-muted);
-  border: 1px solid var(--border);
-}
-
-.upload__result-title {
-  margin: 0 0 0.35rem;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.upload__code {
-  display: block;
-  font-size: 0.78rem;
-  word-break: break-all;
-  margin-bottom: 0.75rem;
-  color: var(--text-strong);
-}
-
-.upload__queue {
-  margin: 0.65rem 0 0;
-  font-size: 0.85rem;
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.upload__hint {
-  margin: 0.5rem 0 0;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  line-height: 1.4;
 }
 
 .upload__row {

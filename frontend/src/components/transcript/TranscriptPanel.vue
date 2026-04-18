@@ -50,7 +50,6 @@ const tab = ref<'original' | 'sanitized'>('original')
             <span v-else>{{ seg.text }}</span>
           </template>
         </p>
-        <p class="tx__hint">Подсветка показывает фрагменты, которые будут удалены или замаскированы.</p>
       </template>
       <template v-else>
         <p class="tx__text tx__text--plain">{{ sanitizedText }}</p>

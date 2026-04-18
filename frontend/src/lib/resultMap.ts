@@ -28,7 +28,6 @@ export function statusLabelRu(status: string): string {
   return m[status] ?? status
 }
 
-/** Пояснение этапа для баннера ожидания. */
 export function statusStageHintRu(status: string): string {
   const m: Record<string, string> = {
     queued: 'Запись ждёт своей очереди — обычно это занимает немного времени.',
@@ -43,34 +42,120 @@ export function statusStageHintRu(status: string): string {
   return m[status] ?? 'Идёт обработка…'
 }
 
-/**
- * Текст для вкладки «С персональными данными».
- * Цельный текст из API (transcript_plain / whisper.text) даёт нормальные пробелы;
- * склейка сегментов из массива без разделителя даёт «слово.Слово».
- */
-export function segmentsFromJob(whisper: unknown, fallbackPlain: string): TranscriptSegment[] {
+const entityCategories: RedactionCategory[] = [
+  'passport',
+  'inn',
+  'snils',
+  'phone',
+  'email',
+  'address',
+]
+
+function isRedactionCategory(s: string): s is RedactionCategory {
+  return entityCategories.includes(s as RedactionCategory)
+}
+
+export function plainTextFromJob(whisper: unknown, fallbackPlain: string): string {
   const fromPlain = fallbackPlain.trim()
-  if (fromPlain) {
-    return [{ text: fromPlain }]
-  }
+  if (fromPlain) return fromPlain
   if (whisper && typeof whisper === 'object') {
     const w = whisper as { text?: string; segments?: Array<{ text?: string }> }
     const t = (w.text ?? '').trim()
-    if (t) {
-      return [{ text: t }]
-    }
+    if (t) return t
     const segs = w.segments
     if (Array.isArray(segs) && segs.length > 0) {
       const joined = segs
         .map((s) => (s.text ?? '').trim())
         .filter(Boolean)
         .join(' ')
-      if (joined) {
-        return [{ text: joined }]
-      }
+      if (joined) return joined
     }
   }
-  return [{ text: '—' }]
+  return ''
+}
+
+type CharSpan = { start: number; end: number; category: RedactionCategory }
+
+function parseLlmEntitySpans(entities: unknown, textLen: number): CharSpan[] {
+  if (!Array.isArray(entities) || textLen <= 0) return []
+  const raw: CharSpan[] = []
+  for (const item of entities) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const sc = o.start_char
+    const ec = o.end_char
+    if (typeof sc !== 'number' || typeof ec !== 'number') continue
+    if (ec <= sc) continue
+    const start = Math.max(0, Math.min(sc, textLen))
+    const end = Math.max(start, Math.min(ec, textLen))
+    if (end <= start) continue
+    const et = String(o.entity_type ?? '').toLowerCase()
+    const category: RedactionCategory = isRedactionCategory(et) ? et : 'phone'
+    raw.push({ start, end, category })
+  }
+  raw.sort((a, b) => a.start - b.start || b.end - a.end)
+  return mergeCharSpans(raw)
+}
+
+function mergeCharSpans(spans: CharSpan[]): CharSpan[] {
+  if (spans.length === 0) return []
+  const out: CharSpan[] = []
+  let cur = { ...spans[0] }
+  for (let i = 1; i < spans.length; i++) {
+    const s = spans[i]
+    if (s.start < cur.end) {
+      cur.end = Math.max(cur.end, s.end)
+    } else {
+      out.push(cur)
+      cur = { ...s }
+    }
+  }
+  out.push(cur)
+  return out
+}
+
+export function segmentsFromPlainAndEntities(plain: string, entities: unknown): TranscriptSegment[] {
+  const t = plain.trim()
+  if (!t) return [{ text: '—' }]
+  const spans = parseLlmEntitySpans(entities, t.length)
+  if (spans.length === 0) return [{ text: t }]
+  const segs: TranscriptSegment[] = []
+  let cursor = 0
+  for (const s of spans) {
+    if (s.start > cursor) {
+      segs.push({ text: t.slice(cursor, s.start) })
+    }
+    if (s.end > s.start) {
+      segs.push({
+        text: t.slice(s.start, s.end),
+        sensitive: true,
+        category: s.category,
+      })
+    }
+    cursor = Math.max(cursor, s.end)
+  }
+  if (cursor < t.length) {
+    segs.push({ text: t.slice(cursor) })
+  }
+  return segs.length > 0 ? segs : [{ text: t }]
+}
+
+export function segmentsFromJob(
+  whisper: unknown,
+  fallbackPlain: string,
+  llmEntities?: unknown,
+): TranscriptSegment[] {
+  const plain = plainTextFromJob(whisper, fallbackPlain)
+  if (!plain) {
+    return [{ text: '—' }]
+  }
+  if (llmEntities !== undefined && llmEntities !== null) {
+    const marked = segmentsFromPlainAndEntities(plain, llmEntities)
+    if (marked.some((s) => s.sensitive)) {
+      return marked
+    }
+  }
+  return [{ text: plain }]
 }
 
 export function statsFromReport(report: unknown): RedactionStat[] {

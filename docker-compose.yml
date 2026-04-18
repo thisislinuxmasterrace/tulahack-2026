@@ -122,13 +122,15 @@ services:
       S3_BUCKET: "app"
       S3_USE_SSL: "false"
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://127.0.0.1:9000}
-      STT_BASE_URL: ${STT_BASE_URL:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      REDACT_BASE_URL: ${REDACT_BASE_URL:-}
+      # Задайте в .env (без коммита реальных хостов в репозиторий)
+      STT_BASE_URL: ${STT_BASE_URL:-http://127.0.0.1:8001}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://127.0.0.1:8081}
+      REDACT_BASE_URL: ${REDACT_BASE_URL:-http://127.0.0.1:8082}
       STT_HTTP_TIMEOUT_SEC: "600"
       LLM_HTTP_TIMEOUT_SEC: "120"
       REDACT_HTTP_TIMEOUT_SEC: "600"
       LOG_LEVEL: "info"
+      # Обязательно задайте в .env; совпадает с WORKER_TOKEN на STT/LLM/Redact (иначе 401)
       WORKER_TOKEN: ${WORKER_TOKEN:-}
     depends_on:
       postgres:

@@ -4,7 +4,6 @@ import { RouterLink } from 'vue-router'
 defineProps<{
   variant?: 'primary' | 'secondary' | 'ghost'
   block?: boolean
-  /** Если задан — рендерится как RouterLink */
   to?: string
 }>()
 </script>

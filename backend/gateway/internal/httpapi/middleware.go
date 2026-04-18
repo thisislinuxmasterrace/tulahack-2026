@@ -28,6 +28,28 @@ func logUploadAuthFail(r *http.Request, reason string) {
 	log.Printf("загрузка аудио: отказ — %s", reason)
 }
 
+// BearerUserIDHeaderOrQuery — JWT из Authorization: Bearer … или из query access_token (как у WebSocket).
+// Удобно для <audio src> и ссылок «Скачать», где нельзя задать заголовок.
+func BearerUserIDHeaderOrQuery(secret []byte, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := BearerTokenFromRequest(r)
+		if token == "" {
+			writeAPIError(w, http.StatusUnauthorized, "unauthorized", "missing access token (Authorization Bearer or access_token query)")
+			return
+		}
+		uid, err := auth.ParseAccess(secret, token)
+		if err != nil {
+			if errors.Is(err, jwt.ErrTokenExpired) {
+				writeAPIError(w, http.StatusUnauthorized, "token_expired", "access token expired")
+				return
+			}
+			writeAPIError(w, http.StatusUnauthorized, "invalid_token", "invalid access token")
+			return
+		}
+		next(w, r.WithContext(WithUserID(r.Context(), uid)))
+	}
+}
+
 func BearerUserID(secret []byte, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimSpace(r.Header.Get("Authorization"))

@@ -110,7 +110,7 @@ function logout() {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent) 0%, #a855f7 100%);
+  background: linear-gradient(145deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 55%, #38bdf8) 100%);
   box-shadow: var(--shadow-sm);
 }
 

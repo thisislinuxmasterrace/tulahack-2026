@@ -6,10 +6,12 @@ import AudioPlayerPanel from '../components/audio/AudioPlayerPanel.vue'
 import ProcessingLogPanel from '../components/report/ProcessingLogPanel.vue'
 import RedactionReport from '../components/report/RedactionReport.vue'
 import TranscriptPanel from '../components/transcript/TranscriptPanel.vue'
+import AudioDownloadBar from '../components/ui/AudioDownloadBar.vue'
 import PageIntro from '../components/ui/PageIntro.vue'
 import UiCard from '../components/ui/UiCard.vue'
 import UiButton from '../components/ui/UiButton.vue'
-import { isLoggedIn } from '../lib/auth'
+import { getAccessToken, isLoggedIn } from '../lib/auth'
+import { uploadOriginalStreamUrl, uploadRedactedStreamUrl } from '../lib/mediaUrls'
 import {
   connectProcessingStatusStream,
   fetchProcessingStatus,
@@ -34,12 +36,18 @@ const loading = ref(true)
 const err = ref<string | null>(null)
 const job = ref<ProcessingJobDetail | null>(null)
 const fileName = ref('')
-const storageUrl = ref('')
-const completedViaPolling = ref(false)
-/** Статус обработки из потока обновлений или периодической проверки. */
 const pipelineStatus = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let wsStop: (() => void) | null = null
+let jobRefreshDebounce: ReturnType<typeof setTimeout> | null = null
+
+function scheduleJobDetailRefresh() {
+  if (jobRefreshDebounce) clearTimeout(jobRefreshDebounce)
+  jobRefreshDebounce = setTimeout(() => {
+    jobRefreshDebounce = null
+    void load(true)
+  }, 320)
+}
 
 const uploadId = computed(() => String(r.params.uploadId ?? ''))
 
@@ -73,16 +81,12 @@ const hasStreamingPartialData = computed(() => {
   return false
 })
 
-const showSuccessBanner = computed(
-  () =>
-    !loading.value &&
-    !err.value &&
-    completedViaPolling.value &&
-    job.value?.status === 'done',
-)
-
 const segments = computed(() =>
-  segmentsFromJob(job.value?.whisper_output, job.value?.transcript_plain ?? ''),
+  segmentsFromJob(
+    job.value?.whisper_output,
+    job.value?.transcript_plain ?? '',
+    job.value?.llm_entities,
+  ),
 )
 const sanitizedText = computed(() => job.value?.transcript_redacted ?? '—')
 const stats = computed(() => statsFromReport(job.value?.redaction_report))
@@ -94,13 +98,40 @@ const timeline = computed(() => timelineFromReport(job.value?.redaction_report, 
 
 const processingLogEntries = computed(() => parseProcessingLogEntries(job.value?.processing_events))
 
+const redactedAudioUrl = computed(() => (job.value?.redacted_audio_storage_url || '').trim())
+
+const listenTrack = ref<'original' | 'redacted'>('original')
+
+watch(
+  () => [job.value?.status, redactedAudioUrl.value] as const,
+  () => {
+    if (job.value?.status === 'done' && redactedAudioUrl.value) {
+      listenTrack.value = 'redacted'
+    } else {
+      listenTrack.value = 'original'
+    }
+  },
+  { immediate: true },
+)
+
+const showTrackSwitch = computed(
+  () => job.value?.status === 'done' && !!redactedAudioUrl.value && !!uploadId.value,
+)
+
+const playbackUrl = computed(() => {
+  if (!uploadId.value || !getAccessToken()) return null
+  if (listenTrack.value === 'redacted' && job.value?.status === 'done' && redactedAudioUrl.value) {
+    return uploadRedactedStreamUrl(uploadId.value)
+  }
+  return uploadOriginalStreamUrl(uploadId.value)
+})
+
 async function load(silent = false) {
   if (!uploadId.value) return
   if (!silent) err.value = null
   try {
     const data = await fetchUploadDetail(uploadId.value)
     fileName.value = data.upload.original_filename
-    storageUrl.value = data.upload.storage_url
     job.value = data.processing_job
     pipelineStatus.value = data.processing_job?.status ?? ''
     if (!silent) err.value = null
@@ -113,30 +144,26 @@ async function load(silent = false) {
     loading.value = false
   }
   if (shouldPoll()) {
-    startWatch()
+    if (!wsStop && !pollTimer) {
+      startWatch()
+    }
   } else {
     stopWatch()
   }
 }
 
-/** Подгрузка деталей job после смены этапа (данные в БД уже обновлены воркером). */
-function maybeRefreshJobAfterStage(prev: string, next: string | undefined) {
-  if (!next || next === prev) return
-  if (next === 'llm' || next === 'render_audio') {
-    void load(true)
-  }
-}
-
 function applyPipelineStatusEvent(s: ProcessingPollStatus) {
-  const prev = pipelineStatus.value
   if (s.status) pipelineStatus.value = s.status
   if (s.terminal) {
-    completedViaPolling.value = true
     stopWatch()
+    if (jobRefreshDebounce) {
+      clearTimeout(jobRefreshDebounce)
+      jobRefreshDebounce = null
+    }
     void load(true)
     return
   }
-  maybeRefreshJobAfterStage(prev, s.status)
+  scheduleJobDetailRefresh()
 }
 
 async function pollStatus() {
@@ -175,7 +202,6 @@ function stopWatch() {
   stopPoll()
 }
 
-/** Подписка на статус: WebSocket, при сбое транспорта — периодический GET …/processing-status. */
 function startWatch() {
   stopWatch()
   if (!uploadId.value || !shouldPoll()) return
@@ -201,46 +227,30 @@ onMounted(async () => {
 })
 
 watch(uploadId, async () => {
+  stopWatch()
   loading.value = true
-  completedViaPolling.value = false
   pipelineStatus.value = ''
   await load()
 })
 
-onUnmounted(() => stopWatch())
+onUnmounted(() => {
+  stopWatch()
+  if (jobRefreshDebounce) {
+    clearTimeout(jobRefreshDebounce)
+    jobRefreshDebounce = null
+  }
+})
 </script>
 
 <template>
   <div class="result">
-    <PageIntro
-      title="Результат обработки"
-      subtitle="Транскрипт и отчёт появляются и обновляются по мере обработки записи."
-    />
-
-    <p v-if="loading" class="result__hint">Загрузка…</p>
-    <p v-else-if="err" class="result__err">{{ err }}</p>
-
-    <template v-else>
+    <div class="result__head">
+      <PageIntro
+        title="Результат обработки"
+        subtitle="Транскрипт и отчёт появляются и обновляются по мере обработки записи."
+      />
       <div
-        v-if="showSuccessBanner"
-        class="result__success"
-        role="status"
-        aria-live="polite"
-      >
-        <span class="result__success-icon" aria-hidden="true">✓</span>
-        <div>
-          <strong>Обработка завершена</strong>
-          <p>Ниже — ваши транскрипт, отчёт и аудио.</p>
-        </div>
-      </div>
-
-      <div v-if="!job" class="result__banner">
-        <span class="result__badge">Нет данных</span>
-        Обработка для этой записи ещё не началась или недоступна. Попробуйте загрузить файл снова.
-      </div>
-
-      <div
-        v-else-if="job && !(showSuccessBanner && job.status === 'done')"
+        v-if="!loading && !err && job && job.status !== 'done'"
         class="result__strip"
         role="status"
         aria-live="polite"
@@ -265,33 +275,80 @@ onUnmounted(() => stopWatch())
           <span v-if="job.error_message" class="result__err-msg">{{ job.error_message }}</span>
         </template>
       </div>
+    </div>
 
-      <div v-if="job" class="result__grid">
-        <UiCard title="Транскрипт" class="result__span2 result__card-priority">
-          <TranscriptPanel :segments="segments" :sanitized-text="sanitizedText" />
-        </UiCard>
+    <p v-if="loading" class="result__hint">Загрузка…</p>
+    <p v-else-if="err" class="result__err">{{ err }}</p>
 
-        <UiCard title="Отчёт по удалённым данным" class="result__span2 result__card-priority">
-          <p v-if="stats.length === 0" class="result__hint">
-            Появится после поиска персональных данных в тексте: типы данных и примеры маскировки.
-          </p>
-          <RedactionReport v-else :rows="stats" />
-        </UiCard>
+    <template v-else>
+      <div v-if="!job" class="result__banner">
+        <span class="result__badge">Нет данных</span>
+        Обработка для этой записи ещё не началась или недоступна. Попробуйте загрузить файл снова.
+      </div>
 
-        <UiCard title="Аудио" class="result__span2">
-          <p v-if="storageUrl" class="result__link">
-            <a :href="storageUrl" target="_blank" rel="noopener">Открыть исходный файл</a>
-          </p>
-          <AudioPlayerPanel
-            :file-name="fileName || 'recording'"
-            :duration-sec="durationSec"
-            :redactions="timeline"
-          />
-        </UiCard>
+      <div v-if="job" class="result__layout">
+        <div class="result__main">
+          <UiCard title="Транскрипт" class="result__card-priority">
+            <TranscriptPanel :segments="segments" :sanitized-text="sanitizedText" />
+          </UiCard>
 
-        <UiCard v-if="processingLogEntries.length" title="Журнал обработки" class="result__span2">
-          <ProcessingLogPanel :entries="processingLogEntries" />
-        </UiCard>
+          <UiCard title="Отчёт по удалённым данным" class="result__card-priority">
+            <p v-if="stats.length === 0" class="result__hint">
+              Появится после поиска персональных данных в тексте: типы данных и примеры маскировки.
+            </p>
+            <RedactionReport v-else :rows="stats" />
+          </UiCard>
+
+          <UiCard title="Аудио">
+            <AudioDownloadBar
+              v-if="uploadId"
+              :upload-id="uploadId"
+              :original-filename="fileName || 'recording'"
+              :redacted-available="job.status === 'done' && !!redactedAudioUrl"
+            />
+            <div
+              v-if="showTrackSwitch"
+              class="result__track-switch"
+              role="group"
+              aria-label="Версия записи для прослушивания"
+            >
+              <button
+                type="button"
+                class="result__track-btn"
+                :class="{ 'result__track-btn--on': listenTrack === 'original' }"
+                @click="listenTrack = 'original'"
+              >
+                Исходное
+              </button>
+              <button
+                type="button"
+                class="result__track-btn"
+                :class="{ 'result__track-btn--on': listenTrack === 'redacted' }"
+                @click="listenTrack = 'redacted'"
+              >
+                Обработанное
+              </button>
+            </div>
+            <AudioPlayerPanel
+              :file-name="fileName || 'recording'"
+              :duration-sec="durationSec"
+              :redactions="timeline"
+              :audio-src="playbackUrl"
+            />
+          </UiCard>
+        </div>
+
+        <aside class="result__aside" aria-label="Журнал обработки">
+          <div class="result__aside-inner">
+            <UiCard title="Журнал обработки" class="result__log-card">
+              <ProcessingLogPanel v-if="processingLogEntries.length" :entries="processingLogEntries" />
+              <p v-else class="result__log-empty">
+                Записи появятся по мере прохождения этапов: загрузка, распознавание, поиск данных, сохранение
+                аудио.
+              </p>
+            </UiCard>
+          </div>
+        </aside>
       </div>
     </template>
 
@@ -304,16 +361,34 @@ onUnmounted(() => stopWatch())
 </template>
 
 <style scoped>
-.result :deep(.intro) {
+.result__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
   margin-bottom: 0.75rem;
 }
+
+.result__head :deep(.intro) {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .result__head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 .result__hint {
   margin: 0 0 1rem;
   color: var(--text-muted);
   font-size: 0.9rem;
 }
 .result__err {
-  color: #c62828;
+  color: var(--danger);
   margin: 0 0 1rem;
 }
 .result__strip {
@@ -321,10 +396,20 @@ onUnmounted(() => stopWatch())
   align-items: flex-start;
   gap: 0.65rem;
   padding: 0.5rem 0.65rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-muted);
+  flex-shrink: 0;
+  max-width: min(26rem, 46%);
+  align-self: flex-start;
+}
+
+@media (max-width: 768px) {
+  .result__strip {
+    max-width: none;
+    align-self: stretch;
+  }
 }
 .result__strip-main {
   display: flex;
@@ -365,42 +450,6 @@ onUnmounted(() => stopWatch())
     transform: rotate(360deg);
   }
 }
-.result__success {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  padding: 0.6rem 0.85rem;
-  margin-bottom: 0.75rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid color-mix(in srgb, #2e7d32 35%, var(--border));
-  background: color-mix(in srgb, #2e7d32 12%, var(--bg-muted));
-}
-.result__success-icon {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
-  border-radius: 50%;
-  background: #2e7d32;
-  color: #fff;
-  font-size: 0.85rem;
-  font-weight: 800;
-  line-height: 1;
-}
-.result__success strong {
-  display: block;
-  font-size: 0.95rem;
-  margin-bottom: 0.3rem;
-  color: var(--text);
-}
-.result__success p {
-  margin: 0;
-  font-size: 0.86rem;
-  line-height: 1.45;
-  color: var(--text-muted);
-}
 .result__banner {
   display: flex;
   align-items: flex-start;
@@ -423,36 +472,108 @@ onUnmounted(() => stopWatch())
   color: #fff;
 }
 .result__badge--bad {
-  background: #c62828;
+  background: var(--danger);
 }
 .result__err-msg {
   font-size: 0.88rem;
-  color: #c62828;
+  color: var(--danger);
   flex: 1;
   min-width: 0;
 }
-.result__link {
-  margin: 0 0 0.75rem;
-  font-size: 0.88rem;
+.result__track-switch {
+  display: inline-flex;
+  padding: 3px;
+  margin-bottom: 0.85rem;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  gap: 2px;
 }
-.result__link a {
+.result__track-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  color: var(--text-muted);
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.result__track-btn:hover {
+  color: var(--text-strong);
+}
+.result__track-btn--on {
+  background: var(--bg-elevated);
   color: var(--accent);
+  box-shadow: var(--shadow-sm);
 }
-.result__grid {
-  display: grid;
+
+.result__layout {
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
 }
+
+.result__main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.result__aside {
+  min-width: 0;
+}
+
+.result__aside-inner {
+  min-height: 0;
+}
+
+.result__log-empty {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.result__log-card :deep(.plog__row) {
+  grid-template-columns: 1fr;
+  gap: 0.35rem;
+}
+
+.result__log-card :deep(.plog__badge) {
+  justify-self: start;
+}
+
+.result__log-card :deep(.plog__msg) {
+  grid-column: 1;
+}
+
 .result__card-priority {
   scroll-margin-top: 0.5rem;
 }
-@media (min-width: 900px) {
-  .result__grid {
-    grid-template-columns: 1fr 1fr;
+
+@media (min-width: 1100px) {
+  .result__layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+    gap: 1.25rem;
+    align-items: start;
   }
-  .result__span2 {
-    grid-column: span 2;
+
+  .result__aside-inner {
+    position: sticky;
+    top: calc(var(--nav-h) + 1.25rem);
+    max-height: calc(100svh - var(--nav-h) - 2.5rem);
+    overflow-y: auto;
+    padding-bottom: 0.25rem;
   }
 }
+
 .result__footer {
   margin-top: 1.5rem;
   display: flex;

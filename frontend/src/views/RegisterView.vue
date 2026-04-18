@@ -115,7 +115,7 @@ async function submit() {
 .auth__err {
   margin: 0;
   font-size: 0.88rem;
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .auth__hint {

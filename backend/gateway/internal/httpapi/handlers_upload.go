@@ -40,6 +40,7 @@ type UploadHandlers struct {
 
 func (h *UploadHandlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/uploads", BearerUserID(h.JWT, h.upload))
+	h.RegisterStreamRoutes(mux)
 	h.RegisterRead(mux)
 }
 

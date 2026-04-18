@@ -1,5 +1,3 @@
-/** Мок-сессия для вёрстки без бэкенда */
-
 export type RedactionCategory =
   | 'passport'
   | 'inn'
@@ -10,13 +8,11 @@ export type RedactionCategory =
 
 export interface TranscriptSegment {
   text: string
-  /** Фрагмент содержит ПДн (подсветка в исходном виде) */
   sensitive?: boolean
   category?: RedactionCategory
 }
 
 export interface TimelineRedaction {
-  /** Доля длительности 0..1 */
   start: number
   end: number
   category: RedactionCategory
@@ -47,7 +43,6 @@ export const demoTranscriptSegments: TranscriptSegment[] = [
   { text: ', выдан УФМС. Спасибо.' },
 ]
 
-/** Текст без ПДн — для второй колонки */
 export const demoSanitizedPlain =
   'Добрый день, [адрес скрыт]. Меня зовут Мария. [ИНН] [СНИЛС]. Перезвоните на [телефон] или на [email]. Паспорт [скрыто], выдан УФМС. Спасибо.'
 

@@ -28,30 +28,36 @@ import {
       Здесь показаны демонстрационные данные, чтобы можно было посмотреть интерфейс без загрузки своего файла.
     </div>
 
-    <div class="result__grid">
-      <UiCard title="Аудио" class="result__span2">
-        <AudioPlayerPanel
-          :file-name="demoFileName"
-          :duration-sec="demoDurationSec"
-          :redactions="demoTimelineRedactions"
-        />
-      </UiCard>
+    <div class="result__layout">
+      <div class="result__main">
+        <UiCard title="Транскрипт">
+          <TranscriptPanel :segments="demoTranscriptSegments" :sanitized-text="demoSanitizedPlain" />
+        </UiCard>
 
-      <UiCard title="Транскрипт" class="result__span2">
-        <TranscriptPanel :segments="demoTranscriptSegments" :sanitized-text="demoSanitizedPlain" />
-      </UiCard>
+        <UiCard title="Отчёт по удалённым данным">
+          <RedactionReport :rows="demoRedactionStats" />
+        </UiCard>
 
-      <UiCard title="Отчёт по удалённым данным" class="result__span2">
-        <RedactionReport :rows="demoRedactionStats" />
-      </UiCard>
+        <UiCard title="Аудио">
+          <AudioPlayerPanel
+            :file-name="demoFileName"
+            :duration-sec="demoDurationSec"
+            :redactions="demoTimelineRedactions"
+          />
+        </UiCard>
+      </div>
 
-      <UiCard title="Журнал обработки" class="result__span2">
-        <p class="result__log-hint">
-          Пример записей с сервера: когда началась обработка, распознавание речи, поиск данных в тексте и финальное
-          сохранение аудио. Время показано в UTC.
-        </p>
-        <ProcessingLogPanel :entries="demoProcessingEvents" />
-      </UiCard>
+      <aside class="result__aside" aria-label="Журнал обработки">
+        <div class="result__aside-inner">
+          <UiCard title="Журнал обработки" class="result__log-card">
+            <p class="result__log-hint">
+              Пример записей с сервера: когда началась обработка, распознавание речи, поиск данных в тексте и финальное
+              сохранение аудио.
+            </p>
+            <ProcessingLogPanel :entries="demoProcessingEvents" />
+          </UiCard>
+        </div>
+      </aside>
     </div>
   </div>
 </template>
@@ -83,18 +89,54 @@ import {
   color: #fff;
 }
 
-.result__grid {
-  display: grid;
-  gap: 1.25rem;
+.result__layout {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
-@media (min-width: 900px) {
-  .result__grid {
-    grid-template-columns: 1fr 1fr;
+.result__main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.result__aside {
+  min-width: 0;
+}
+
+.result__aside-inner {
+  min-height: 0;
+}
+
+.result__log-card :deep(.plog__row) {
+  grid-template-columns: 1fr;
+  gap: 0.35rem;
+}
+
+.result__log-card :deep(.plog__badge) {
+  justify-self: start;
+}
+
+.result__log-card :deep(.plog__msg) {
+  grid-column: 1;
+}
+
+@media (min-width: 1100px) {
+  .result__layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+    gap: 1.25rem;
+    align-items: start;
   }
 
-  .result__span2 {
-    grid-column: span 2;
+  .result__aside-inner {
+    position: sticky;
+    top: calc(var(--nav-h) + 1.25rem);
+    max-height: calc(100svh - var(--nav-h) - 2.5rem);
+    overflow-y: auto;
+    padding-bottom: 0.25rem;
   }
 }
 

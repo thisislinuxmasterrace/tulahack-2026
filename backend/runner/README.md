@@ -35,7 +35,7 @@ $env:REDACT_BASE_URL = "http://127.0.0.1:8082"
 python main.py
 ```
 
-`WORKER_TOKEN` — общий секрет с воркерами (`Authorization: Bearer …`); если не задан, заголовок не шлётся.
+`WORKER_TOKEN` — **тот же** секрет, что на сервисах `workers/stt`, `llm`, `redact` (`Authorization: Bearer …`). Если на воркере токен задан, а в runner — пустой, STT ответит **401**. В Docker задайте переменную в `.env` рядом с `docker-compose.yml`.
 
 Таймауты (опционально): `STT_HTTP_TIMEOUT_SEC`, `LLM_HTTP_TIMEOUT_SEC`, `REDACT_HTTP_TIMEOUT_SEC` — по умолчанию 600 / 120 / 600 с.
 

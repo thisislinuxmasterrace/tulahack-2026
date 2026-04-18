@@ -55,7 +55,6 @@ export type ProcessingJobDetail = {
   finished_at?: string
 }
 
-/** Краткий статус для опроса: из Redis или из БД. */
 export type ProcessingPollStatus = {
   upload_id: string
   processing_job_id: string | null
@@ -84,10 +83,6 @@ export async function fetchProcessingStatus(uploadId: string): Promise<Processin
   return data as ProcessingPollStatus
 }
 
-/**
- * Поток статуса по WebSocket: первое сообщение — как у fetchProcessingStatus, далее — push из Redis.
- * Токен передаётся в query (access_token): для WS заголовок Authorization не используется.
- */
 export function connectProcessingStatusStream(
   uploadId: string,
   onStatus: (s: ProcessingPollStatus) => void,
@@ -136,7 +131,6 @@ export async function fetchUploadDetail(uploadId: string): Promise<{
   return data as { upload: UploadDTO; processing_job: ProcessingJobDetail | null }
 }
 
-/** Загрузка аудиофайла на шлюз (multipart); требуется сессия. */
 export async function uploadAudio(file: File): Promise<UploadWithQueueResponse> {
   const fd = new FormData()
   fd.append('file', file)
