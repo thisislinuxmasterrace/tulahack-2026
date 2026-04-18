@@ -455,7 +455,36 @@ async def anonymize(
             # Склейка сегментов пробелом — как у aggregate text в faster-whisper.
             full_text = rebuilt
     if not full_text:
-        raise HTTPException(status_code=400, detail="empty transcript")
+        # Нет речи / пустой STT — не дергаем LLM, отдаём тот же контракт ответа, что и после анонимизации.
+        empty_report = _redaction_report([])
+        out_empty: list[dict[str, Any]] = []
+        if segments:
+            for s in segments:
+                out_empty.append(
+                    {
+                        "start": s.start,
+                        "end": s.end,
+                        "text": s.text or "",
+                        "words": [w.model_dump() for w in (s.words or [])],
+                    }
+                )
+        else:
+            out_empty.append(
+                {
+                    "start": 0.0,
+                    "end": 0.0,
+                    "text": "",
+                    "words": None,
+                }
+            )
+        return {
+            "transcript_plain": "",
+            "transcript_redacted": "",
+            "llm_entities": [],
+            "redaction_report": empty_report,
+            "segments": out_empty,
+            "model": (os.getenv("LM_MODEL") or "").strip() or "google/gemma-4-e4b",
+        }
 
     messages = _build_llm_messages(full_text, body.language)
     raw_out = await _call_lm_studio(messages)
