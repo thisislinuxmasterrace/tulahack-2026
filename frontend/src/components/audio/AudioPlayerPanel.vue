@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 
 import type { TimelineRedaction } from '../../types/result'
 
@@ -37,12 +37,41 @@ const showDownloads = computed(
 )
 
 const audioRef = ref<HTMLAudioElement | null>(null)
+/** Safari часто не играет потоковый MP3 с API; после ошибки подставляем blob URL. */
+const blobSrc = ref<string | null>(null)
+const blobFallbackTried = ref(false)
+/** Один проход HEAD+fetch для Safari (малые файлы). */
+const safariSmallPrefetchDone = ref(false)
+const playbackError = ref<string | null>(null)
+
+const SAFARI_BLOB_PREFETCH_MAX = 8 * 1024 * 1024
+
+function isSafari(): boolean {
+  const ua = navigator.userAgent
+  return /safari/i.test(ua) && !/chrome|crios|chromium|android|edg/i.test(ua)
+}
+
+function looksLikeAudioResponse(res: Response): boolean {
+  const ct = (res.headers.get('content-type') || '').toLowerCase()
+  if (ct.includes('json') || ct.includes('text/html')) {
+    return false
+  }
+  return (
+    !ct ||
+    ct.includes('audio') ||
+    ct.includes('mpeg') ||
+    ct.includes('octet-stream')
+  )
+}
+
 const mediaDurationSec = ref(0)
 const progress = ref(0)
 const playing = ref(false)
 let raf = 0
 
 const live = computed(() => !!(props.audioSrc && props.audioSrc.length > 0))
+
+const effectiveAudioSrc = computed(() => blobSrc.value ?? props.audioSrc ?? undefined)
 
 const currentLabel = computed(() => {
   const dur = effectiveDuration.value
@@ -87,19 +116,23 @@ function tickMock() {
   raf = requestAnimationFrame(tickMock)
 }
 
-function togglePlay() {
+async function togglePlay() {
   if (live.value) {
+    const el0 = audioRef.value
+    if (!el0) return
+    if (!el0.paused) {
+      el0.pause()
+      return
+    }
+    await ensureSafariPlayableBlobIfSmall()
+    await nextTick()
     const el = audioRef.value
     if (!el) return
-    if (playing.value) {
-      el.pause()
-    } else {
-      const p = el.play()
-      if (p !== undefined) {
-        void p.catch(() => {
-          playing.value = false
-        })
-      }
+    const p = el.play()
+    if (p !== undefined) {
+      void p.catch(() => {
+        playing.value = false
+      })
     }
   } else {
     playing.value = !playing.value
@@ -115,7 +148,10 @@ function togglePlay() {
 function onTimeUpdate() {
   const el = audioRef.value
   if (!el) return
-  const dur = effectiveDuration.value
+  let dur = effectiveDuration.value
+  if (typeof el.duration === 'number' && !Number.isNaN(el.duration) && el.duration > 0) {
+    dur = el.duration
+  }
   if (dur <= 0) return
   if (mediaDurationSec.value <= 0) {
     syncDurationFromElement()
@@ -151,12 +187,99 @@ function onEnded() {
   progress.value = 0
 }
 
+function revokeBlobIfAny() {
+  if (blobSrc.value) {
+    URL.revokeObjectURL(blobSrc.value)
+    blobSrc.value = null
+  }
+}
+
+async function ensureSafariPlayableBlobIfSmall() {
+  const src = props.audioSrc
+  if (!isSafari() || blobSrc.value || !src || safariSmallPrefetchDone.value) {
+    return
+  }
+  safariSmallPrefetchDone.value = true
+  try {
+    const head = await fetch(src, { method: 'HEAD' })
+    if (!head.ok) {
+      return
+    }
+    if (!looksLikeAudioResponse(head)) {
+      return
+    }
+    const cl = parseInt(head.headers.get('content-length') || '', 10)
+    if (!Number.isFinite(cl) || cl > SAFARI_BLOB_PREFETCH_MAX) {
+      return
+    }
+    const res = await fetch(src)
+    if (!res.ok || !looksLikeAudioResponse(res)) {
+      return
+    }
+    const blob = await res.blob()
+    revokeBlobIfAny()
+    blobSrc.value = URL.createObjectURL(blob)
+    await nextTick()
+    audioRef.value?.load()
+  } catch {
+    /* остаёмся на потоковом URL; сработает tryBlobFallbackAfterError при error */
+  }
+}
+
+async function tryBlobFallbackAfterError() {
+  const src = props.audioSrc
+  if (!src || blobSrc.value || blobFallbackTried.value) {
+    return
+  }
+  blobFallbackTried.value = true
+  try {
+    const res = await fetch(src)
+    if (!res.ok) {
+      playbackError.value = `Не удалось загрузить аудио (${res.status}).`
+      return
+    }
+    if (!looksLikeAudioResponse(res)) {
+      playbackError.value = 'Сервер вернул не аудио — проверьте вход или скачайте файл.'
+      return
+    }
+    const blob = await res.blob()
+    revokeBlobIfAny()
+    blobSrc.value = URL.createObjectURL(blob)
+    await nextTick()
+    const el = audioRef.value
+    if (!el) return
+    el.load()
+    const p = el.play()
+    if (p !== undefined) void p.catch(() => {})
+  } catch {
+    playbackError.value = 'Не удалось воспроизвести. Попробуйте скачать файл.'
+  }
+}
+
+function onAudioError() {
+  const el = audioRef.value
+  const code = el?.error?.code
+  const msg = el?.error?.message
+  if (import.meta.env.DEV) {
+    console.warn('[AudioPlayer] error', code, msg)
+  }
+  if (blobSrc.value) {
+    playbackError.value = 'Не удалось воспроизвести. Скачайте файл по ссылке ниже.'
+    return
+  }
+  playbackError.value = null
+  void tryBlobFallbackAfterError()
+}
+
 function seekClientX(clientX: number, el: HTMLElement) {
   const rect = el.getBoundingClientRect()
   const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
   progress.value = ratio
   const a = audioRef.value
-  const dur = effectiveDuration.value
+  let dur = effectiveDuration.value
+  if (a && typeof a.duration === 'number' && !Number.isNaN(a.duration) && a.duration > 0) {
+    dur = a.duration
+  }
   if (!live.value || !a || dur <= 0) {
     return
   }
@@ -186,24 +309,34 @@ function onTimelinePointerMove(e: PointerEvent) {
 
 watch(
   () => props.audioSrc,
-  () => {
+  async () => {
+    playbackError.value = null
+    blobFallbackTried.value = false
+    safariSmallPrefetchDone.value = false
+    revokeBlobIfAny()
     playing.value = false
     progress.value = 0
     mediaDurationSec.value = 0
     cancelAnimationFrame(raf)
+    await nextTick()
+    audioRef.value?.load()
   },
 )
 
-onUnmounted(() => cancelAnimationFrame(raf))
+onUnmounted(() => {
+  cancelAnimationFrame(raf)
+  revokeBlobIfAny()
+})
 </script>
 
 <template>
   <div class="player">
     <audio
       v-if="live"
+      :key="`${audioSrc ?? ''}|${blobSrc ? 'b' : 'd'}`"
       ref="audioRef"
       class="player__audio"
-      :src="audioSrc || undefined"
+      :src="effectiveAudioSrc"
       preload="auto"
       playsinline
       webkit-playsinline
@@ -213,7 +346,10 @@ onUnmounted(() => cancelAnimationFrame(raf))
       @play="onPlay"
       @pause="onPause"
       @ended="onEnded"
+      @error="onAudioError"
     />
+
+    <p v-if="playbackError" class="player__err" role="alert">{{ playbackError }}</p>
 
     <div class="player__row">
       <button type="button" class="player__play" :aria-pressed="playing" @click="togglePlay">
@@ -294,19 +430,23 @@ onUnmounted(() => cancelAnimationFrame(raf))
 </template>
 
 <style scoped>
-/* Safari не воспроизводит медиа в элементе 0×0; прячем как sr-only (незаметный 1×1). */
+/* WebKit: не используем clip/overflow:hidden на <audio> — иногда глушит вывод. */
 .player__audio {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-  opacity: 0.01;
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: 2px;
+  height: 2px;
+  z-index: -1;
+  opacity: 0.02;
   pointer-events: none;
+}
+
+.player__err {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  color: var(--danger, #b42318);
+  line-height: 1.4;
 }
 
 .player__row {
