@@ -40,7 +40,7 @@ cd frontend && npm install && npm run dev
 docker compose up --build
 ```
 
-Сервисы: **`web`** (nginx + статика Vue, порт **8081**), **`gateway`**, **`runner`**, **`web`**
+Сервисы: **`web`** (nginx + статика Vue, порт **8081**), **`gateway`**, **`runner`**
 
 ## Демо проекта
 
