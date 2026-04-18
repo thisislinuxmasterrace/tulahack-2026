@@ -1,4 +1,4 @@
-import { Mp3Encoder } from 'lamejs'
+import { getMp3EncoderClass } from './lameLoader'
 
 const MP3_SAMPLE_RATE = 44100
 const MP3_KBPS = 128
@@ -69,8 +69,9 @@ function floatTo16BitPCM(float32: Float32Array): Int16Array {
   return out
 }
 
-function encodePcmToMp3Blob(pcm: Int16Array): Blob {
+async function encodePcmToMp3Blob(pcm: Int16Array): Promise<Blob> {
   dbg('encodePcmToMp3Blob: pcm samples', pcm.length)
+  const Mp3Encoder = await getMp3EncoderClass()
   const enc = new Mp3Encoder(1, MP3_SAMPLE_RATE, MP3_KBPS)
   const parts: Uint8Array[] = []
   try {
@@ -103,7 +104,11 @@ function encodePcmToMp3Blob(pcm: Int16Array): Blob {
 /**
  * Моно PCM (float −1…1) с исходной частотой дискретизации → MP3 44.1 kHz.
  */
-export function floatMonoToMp3File(samples: Float32Array, sourceSampleRate: number, filename: string): File {
+export async function floatMonoToMp3File(
+  samples: Float32Array,
+  sourceSampleRate: number,
+  filename: string,
+): Promise<File> {
   dbg('floatMonoToMp3File: input length', samples.length, 'sourceSampleRate', sourceSampleRate, filename)
   if (samples.length < 64) {
     dbgErr('floatMonoToMp3File: too_short', { length: samples.length })
@@ -113,7 +118,7 @@ export function floatMonoToMp3File(samples: Float32Array, sourceSampleRate: numb
     const resampled = resampleLinear(samples, sourceSampleRate, MP3_SAMPLE_RATE)
     dbg('floatMonoToMp3File: after resample', resampled.length)
     const pcm = floatTo16BitPCM(resampled)
-    const blob = encodePcmToMp3Blob(pcm)
+    const blob = await encodePcmToMp3Blob(pcm)
     const file = new File([blob], filename, { type: 'audio/mpeg' })
     dbg('floatMonoToMp3File: done file.size', file.size)
     return file
@@ -272,7 +277,7 @@ export function createLiveMp3Capture(): LiveMp3Capture {
       }
       chunkList.length = 0
       try {
-        return floatMonoToMp3File(merged, rate, filename)
+        return await floatMonoToMp3File(merged, rate, filename)
       } catch (err) {
         dbgErr('stop(): floatMonoToMp3File failed', err)
         throw err
