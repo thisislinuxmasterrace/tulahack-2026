@@ -9,7 +9,7 @@ import TranscriptPanel from '../components/transcript/TranscriptPanel.vue'
 import PageIntro from '../components/ui/PageIntro.vue'
 import UiCard from '../components/ui/UiCard.vue'
 import UiButton from '../components/ui/UiButton.vue'
-import { getAccessToken, isLoggedIn } from '../lib/auth'
+import { ensureAccessTokenFresh, getAccessToken, isLoggedIn, onAccessTokenChanged } from '../lib/auth'
 import { uploadOriginalStreamUrl, uploadRedactedStreamUrl } from '../lib/mediaUrls'
 import {
   connectProcessingStatusStream,
@@ -51,6 +51,11 @@ function scheduleJobDetailRefresh() {
 }
 
 const uploadId = computed(() => String(r.params.uploadId ?? ''))
+
+/** Пересборка URL с `?access_token=` после refresh в localStorage. */
+const mediaUrlEpoch = ref(0)
+let mediaRefreshTimer: ReturnType<typeof setInterval> | null = null
+let unsubMediaTokens: (() => void) | null = null
 
 const displayStatus = computed(() => {
   const live = pipelineStatus.value
@@ -128,6 +133,7 @@ const showTrackSwitch = computed(
 )
 
 const playbackUrl = computed(() => {
+  void mediaUrlEpoch.value
   if (!uploadId.value || !getAccessToken()) return null
   if (listenTrack.value === 'redacted' && job.value?.status === 'done' && redactedAudioUrl.value) {
     return uploadRedactedStreamUrl(uploadId.value)
@@ -136,11 +142,13 @@ const playbackUrl = computed(() => {
 })
 
 const originalDownloadHref = computed(() => {
+  void mediaUrlEpoch.value
   if (!uploadId.value || !getAccessToken()) return null
   return uploadOriginalStreamUrl(uploadId.value, { download: true })
 })
 
 const redactedDownloadHref = computed(() => {
+  void mediaUrlEpoch.value
   if (!uploadId.value || !getAccessToken()) return null
   if (job.value?.status !== 'done' || !redactedAudioUrl.value) return null
   return uploadRedactedStreamUrl(uploadId.value, { download: true })
@@ -168,7 +176,7 @@ async function load(silent = false) {
   }
   if (shouldPoll()) {
     if (!wsStop && !pollTimer) {
-      startWatch()
+      void startWatch()
     }
   } else {
     stopWatch()
@@ -226,11 +234,11 @@ function stopWatch() {
   stopPoll()
 }
 
-function startWatch() {
+async function startWatch() {
   stopWatch()
   if (!uploadId.value || !shouldPoll()) return
   try {
-    wsStop = connectProcessingStatusStream(
+    wsStop = await connectProcessingStatusStream(
       uploadId.value,
       (s) => {
         applyPipelineStatusEvent(s)
@@ -247,6 +255,12 @@ function startWatch() {
 }
 
 onMounted(async () => {
+  unsubMediaTokens = onAccessTokenChanged(() => {
+    mediaUrlEpoch.value += 1
+  })
+  mediaRefreshTimer = setInterval(() => {
+    void ensureAccessTokenFresh()
+  }, 60_000)
   await load()
 })
 
@@ -260,6 +274,12 @@ watch(uploadId, async () => {
 
 onUnmounted(() => {
   stopWatch()
+  unsubMediaTokens?.()
+  unsubMediaTokens = null
+  if (mediaRefreshTimer) {
+    clearInterval(mediaRefreshTimer)
+    mediaRefreshTimer = null
+  }
   if (jobRefreshDebounce) {
     clearTimeout(jobRefreshDebounce)
     jobRefreshDebounce = null

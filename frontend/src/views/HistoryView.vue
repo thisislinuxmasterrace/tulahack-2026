@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import PageIntro from '../components/ui/PageIntro.vue'
 import UiButton from '../components/ui/UiButton.vue'
 import UiCard from '../components/ui/UiCard.vue'
+import { onAccessTokenChanged } from '../lib/auth'
 import { uploadOriginalStreamUrl, uploadRedactedStreamUrl } from '../lib/mediaUrls'
 import { fetchUploadsList, type UploadListRow } from '../lib/uploadsApi'
 import { statusLabelRu } from '../lib/resultMap'
@@ -14,6 +15,9 @@ const router = useRouter()
 const loading = ref(true)
 const err = ref<string | null>(null)
 const rows = ref<UploadListRow[]>([])
+/** Зависимость для ссылок с access_token — обновление после refresh. */
+const mediaUrlEpoch = ref(0)
+let unsubMediaTokens: (() => void) | null = null
 
 function formatWhen(iso: string) {
   try {
@@ -33,10 +37,12 @@ function openRow(uploadId: string) {
 }
 
 function downloadOriginalHref(id: string) {
+  void mediaUrlEpoch.value
   return uploadOriginalStreamUrl(id, { download: true })
 }
 
 function downloadRedactedHref(id: string) {
+  void mediaUrlEpoch.value
   return uploadRedactedStreamUrl(id, { download: true })
 }
 
@@ -46,6 +52,9 @@ function safeDownloadName(name: string): string {
 }
 
 onMounted(async () => {
+  unsubMediaTokens = onAccessTokenChanged(() => {
+    mediaUrlEpoch.value += 1
+  })
   loading.value = true
   err.value = null
   try {
@@ -57,6 +66,11 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+})
+
+onUnmounted(() => {
+  unsubMediaTokens?.()
+  unsubMediaTokens = null
 })
 </script>
 

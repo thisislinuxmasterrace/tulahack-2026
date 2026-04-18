@@ -1,4 +1,4 @@
-import { apiFetch, clearTokens, getAccessToken, type ApiError } from './auth'
+import { apiFetch, clearTokens, ensureAccessTokenFresh, getAccessToken, type ApiError } from './auth'
 
 export type UploadWithQueueResponse = {
   upload: {
@@ -83,11 +83,12 @@ export async function fetchProcessingStatus(uploadId: string): Promise<Processin
   return data as ProcessingPollStatus
 }
 
-export function connectProcessingStatusStream(
+export async function connectProcessingStatusStream(
   uploadId: string,
   onStatus: (s: ProcessingPollStatus) => void,
   onTransportError?: () => void,
-): () => void {
+): Promise<() => void> {
+  await ensureAccessTokenFresh()
   const token = getAccessToken()
   if (!token) {
     onTransportError?.()
