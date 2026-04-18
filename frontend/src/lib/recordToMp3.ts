@@ -4,20 +4,18 @@ const MP3_SAMPLE_RATE = 44100
 const MP3_KBPS = 128
 const CHUNK_SAMPLES = 1152
 
-function mixToMono(buffer: AudioBuffer): Float32Array {
-  const n = buffer.numberOfChannels
-  const len = buffer.length
-  if (n === 1) {
-    return buffer.getChannelData(0)
+function audioContextCtor(): typeof AudioContext {
+  const w = window as unknown as { webkitAudioContext?: typeof AudioContext }
+  return window.AudioContext ?? w.webkitAudioContext ?? AudioContext
+}
+
+export function isLiveCaptureSupported(): boolean {
+  if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    return false
   }
-  const out = new Float32Array(len)
-  for (let c = 0; c < n; c++) {
-    const ch = buffer.getChannelData(c)
-    for (let i = 0; i < len; i++) {
-      out[i] += ch[i] / n
-    }
-  }
-  return out
+  const w = window as unknown as { webkitAudioContext?: typeof AudioContext }
+  const Ctor = window.AudioContext ?? w.webkitAudioContext
+  return typeof Ctor === 'function' && typeof Ctor.prototype.createScriptProcessor === 'function'
 }
 
 function resampleLinear(input: Float32Array, inputRate: number, outputRate: number): Float32Array {
@@ -72,33 +70,132 @@ function encodePcmToMp3Blob(pcm: Int16Array): Blob {
 }
 
 /**
- * Декодирует запись браузера (WebM/OGG/…) в моно PCM 44.1 kHz и кодирует в MP3.
+ * Моно PCM (float −1…1) с исходной частотой дискретизации → MP3 44.1 kHz.
  */
-export async function recordedBlobToMp3File(recorded: Blob, filename = 'voice.mp3'): Promise<File> {
-  const raw = await recorded.arrayBuffer()
-  const ctx = new AudioContext()
-  let audio: AudioBuffer
-  try {
-    audio = await ctx.decodeAudioData(raw.slice(0))
-  } finally {
-    await ctx.close().catch(() => {})
+export function floatMonoToMp3File(samples: Float32Array, sourceSampleRate: number, filename: string): File {
+  if (samples.length < 64) {
+    throw new Error('too_short')
   }
-  const mono = mixToMono(audio)
-  const resampled = resampleLinear(mono, audio.sampleRate, MP3_SAMPLE_RATE)
+  const resampled = resampleLinear(samples, sourceSampleRate, MP3_SAMPLE_RATE)
   const pcm = floatTo16BitPCM(resampled)
   const blob = encodePcmToMp3Blob(pcm)
   return new File([blob], filename, { type: 'audio/mpeg' })
 }
 
-export function preferredRecorderMimeType(): string | undefined {
-  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
-    return undefined
-  }
-  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
-  for (const t of candidates) {
-    if (MediaRecorder.isTypeSupported(t)) {
-      return t
+export type LiveMp3Capture = {
+  start: () => Promise<void>
+  stop: (filename: string) => Promise<File>
+  cancel: () => void
+}
+
+/** Запись с микрофона в PCM через Web Audio (без MediaRecorder / decodeAudioData — совместимо с Safari). */
+export function createLiveMp3Capture(): LiveMp3Capture {
+  let ctx: AudioContext | null = null
+  let stream: MediaStream | null = null
+  let source: MediaStreamAudioSourceNode | null = null
+  let processor: ScriptProcessorNode | null = null
+  let mute: GainNode | null = null
+  let live = false
+  const chunkList: Float32Array[] = []
+
+  const cleanupGraph = async () => {
+    try {
+      processor?.disconnect()
+      source?.disconnect()
+      mute?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    processor = null
+    source = null
+    mute = null
+    if (ctx) {
+      try {
+        await ctx.close()
+      } catch {
+        /* ignore */
+      }
+    }
+    ctx = null
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop())
+      stream = null
     }
   }
-  return undefined
+
+  return {
+    async start(): Promise<void> {
+      live = false
+      await cleanupGraph()
+      chunkList.length = 0
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      })
+      const AC = audioContextCtor()
+      ctx = new AC()
+      await ctx.resume()
+
+      source = ctx.createMediaStreamSource(stream)
+      const bufferSize = 4096
+      processor = ctx.createScriptProcessor(bufferSize, 2, 2)
+
+      processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        if (!live) {
+          return
+        }
+        const b = e.inputBuffer
+        const len = b.length
+        const n = b.numberOfChannels
+        const mono = new Float32Array(len)
+        if (n === 1) {
+          mono.set(b.getChannelData(0))
+        } else {
+          for (let c = 0; c < n; c++) {
+            const ch = b.getChannelData(c)
+            for (let i = 0; i < len; i++) {
+              mono[i] += ch[i] / n
+            }
+          }
+        }
+        chunkList.push(mono)
+      }
+
+      mute = ctx.createGain()
+      mute.gain.value = 0
+      source.connect(processor)
+      processor.connect(mute)
+      mute.connect(ctx.destination)
+
+      live = true
+    },
+
+    async stop(filename: string): Promise<File> {
+      const rate = ctx?.sampleRate ?? MP3_SAMPLE_RATE
+      live = false
+      await cleanupGraph()
+
+      const total = chunkList.reduce((a, c) => a + c.length, 0)
+      if (total < 64) {
+        chunkList.length = 0
+        throw new Error('too_short')
+      }
+      const merged = new Float32Array(total)
+      let off = 0
+      for (const c of chunkList) {
+        merged.set(c, off)
+        off += c.length
+      }
+      chunkList.length = 0
+      return floatMonoToMp3File(merged, rate, filename)
+    },
+
+    cancel(): void {
+      live = false
+      chunkList.length = 0
+      void cleanupGraph()
+    },
+  }
 }
