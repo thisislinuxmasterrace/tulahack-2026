@@ -41,6 +41,7 @@ function isMp3File(f: File): boolean {
 }
 
 function requestCancelRecording() {
+  console.log('[upload-view] requestCancelRecording')
   liveCapture?.cancel()
   liveCapture = null
   recording.value = false
@@ -62,8 +63,10 @@ function pickFile(f: File) {
 }
 
 async function startRecording() {
+  console.log('[upload-view] startRecording click, canUseMic=', canUseMic.value)
   if (!canUseMic.value) {
     note.value = 'В этом браузере недоступна запись с микрофона.'
+    console.warn('[upload-view] blocked: isLiveCaptureSupported() is false — см. логи [record-mp3]')
     return
   }
   note.value = ''
@@ -75,16 +78,23 @@ async function startRecording() {
     liveCapture = createLiveMp3Capture()
     await liveCapture.start()
     recording.value = true
-  } catch {
-    note.value = 'Не удалось получить доступ к микрофону. Разрешите запись в настройках браузера.'
+    console.log('[upload-view] startRecording OK, recording=true')
+  } catch (e) {
+    console.error('[upload-view] startRecording FAILED', e)
+    if (e instanceof Error) {
+      console.error('[upload-view] stack', e.stack)
+    }
+    note.value = 'Не удалось получить доступ к микрофону. Разрешите запись в настройках браузера. Подробности в консоли (F12).'
     liveCapture = null
     recording.value = false
   }
 }
 
 async function stopRecording() {
+  console.log('[upload-view] stopRecording click')
   const cap = liveCapture
   if (!cap) {
+    console.warn('[upload-view] stopRecording: no active liveCapture')
     return
   }
   liveCapture = null
@@ -98,11 +108,16 @@ async function stopRecording() {
     fileRef.value = file
     fileName.value = file.name
     note.value = 'Запись сохранена как MP3. Нажмите «Загрузить и обработать».'
+    console.log('[upload-view] stopRecording OK, file.size=', file.size, file.name)
   } catch (e) {
+    console.error('[upload-view] stopRecording FAILED', e)
+    if (e instanceof Error) {
+      console.error('[upload-view] stack', e.stack)
+    }
     const short = e instanceof Error && e.message === 'too_short'
     note.value = short
       ? 'Запись слишком короткая — задержите кнопку чуть дольше.'
-      : 'Не удалось сохранить MP3. Попробуйте ещё раз или загрузите готовый .mp3 файл.'
+      : 'Не удалось сохранить MP3. Подробности в консоли (F12).'
   } finally {
     encoding.value = false
   }
