@@ -111,6 +111,25 @@ export function connectProcessingStatusStream(
   }
 }
 
+export type UploadListRow = {
+  upload: UploadDTO
+  processing_job: { id: string; status: string; updated_at?: string } | null
+}
+
+export async function fetchUploadsList(limit = 50): Promise<{ uploads: UploadListRow[] }> {
+  const res = await apiFetch(`/uploads?limit=${encodeURIComponent(String(limit))}`)
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 401) {
+    clearTokens()
+    throw new Error('Сессия истекла — войдите снова')
+  }
+  if (!res.ok) {
+    const err = data as ApiError
+    throw new Error(err.error?.message ?? res.statusText)
+  }
+  return data as { uploads: UploadListRow[] }
+}
+
 export async function fetchUploadDetail(uploadId: string): Promise<{
   upload: UploadDTO
   processing_job: ProcessingJobDetail | null

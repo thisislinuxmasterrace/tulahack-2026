@@ -35,6 +35,7 @@ function logout() {
           <RouterLink to="/demo" class="shell__link" active-class="shell__link--active">Пример экрана</RouterLink>
           <template v-if="logged">
             <RouterLink to="/upload" class="shell__link" active-class="shell__link--active">Загрузка</RouterLink>
+            <RouterLink to="/history" class="shell__link" active-class="shell__link--active">История</RouterLink>
             <button type="button" class="shell__link shell__link--btn" @click="logout">Выйти</button>
           </template>
           <template v-else>

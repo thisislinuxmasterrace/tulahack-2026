@@ -36,6 +36,8 @@ const loading = ref(true)
 const err = ref<string | null>(null)
 const job = ref<ProcessingJobDetail | null>(null)
 const fileName = ref('')
+/** true после завершения по стриму/опросу или при открытии уже готовой записи (история). */
+const completedViaPolling = ref(false)
 const pipelineStatus = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let wsStop: (() => void) | null = null
@@ -80,6 +82,14 @@ const hasStreamingPartialData = computed(() => {
   if (j.transcript_redacted || j.redaction_report || j.llm_entities) return true
   return false
 })
+
+const showSuccessBanner = computed(
+  () =>
+    !loading.value &&
+    !err.value &&
+    completedViaPolling.value &&
+    job.value?.status === 'done',
+)
 
 const segments = computed(() =>
   segmentsFromJob(
@@ -134,6 +144,9 @@ async function load(silent = false) {
     fileName.value = data.upload.original_filename
     job.value = data.processing_job
     pipelineStatus.value = data.processing_job?.status ?? ''
+    if (data.processing_job?.status === 'done') {
+      completedViaPolling.value = true
+    }
     if (!silent) err.value = null
   } catch (e) {
     if (!silent) {
@@ -155,6 +168,7 @@ async function load(silent = false) {
 function applyPipelineStatusEvent(s: ProcessingPollStatus) {
   if (s.status) pipelineStatus.value = s.status
   if (s.terminal) {
+    completedViaPolling.value = true
     stopWatch()
     if (jobRefreshDebounce) {
       clearTimeout(jobRefreshDebounce)
@@ -229,6 +243,7 @@ onMounted(async () => {
 watch(uploadId, async () => {
   stopWatch()
   loading.value = true
+  completedViaPolling.value = false
   pipelineStatus.value = ''
   await load()
 })
@@ -249,6 +264,18 @@ onUnmounted(() => {
         title="Результат обработки"
         subtitle="Транскрипт и отчёт появляются и обновляются по мере обработки записи."
       />
+      <div
+        v-if="showSuccessBanner"
+        class="result__success"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="result__success-icon" aria-hidden="true">✓</span>
+        <div class="result__success-body">
+          <strong class="result__success-title">Обработка завершена</strong>
+          <p class="result__success-text">Ниже — ваши транскрипт, отчёт и аудио.</p>
+        </div>
+      </div>
       <div
         v-if="!loading && !err && job && job.status !== 'done'"
         class="result__strip"
@@ -380,6 +407,55 @@ onUnmounted(() => {
     flex-direction: column;
     align-items: stretch;
   }
+}
+
+.result__success {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--accent-soft);
+  flex-shrink: 0;
+  max-width: min(28rem, 46%);
+  align-self: flex-start;
+}
+@media (max-width: 768px) {
+  .result__success {
+    max-width: none;
+    align-self: stretch;
+  }
+}
+.result__success-icon {
+  flex-shrink: 0;
+  width: 1.35rem;
+  height: 1.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.75rem;
+  line-height: 1;
+  margin-top: 0.1rem;
+}
+.result__success-body {
+  min-width: 0;
+}
+.result__success-title {
+  display: block;
+  font-size: 0.88rem;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+.result__success-text {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 .result__hint {

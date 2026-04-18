@@ -4,6 +4,7 @@ import HomeView from '../views/HomeView.vue'
 import UploadView from '../views/UploadView.vue'
 import ResultDemoView from '../views/ResultDemoView.vue'
 import ResultView from '../views/ResultView.vue'
+import HistoryView from '../views/HistoryView.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import { getAccessToken } from '../lib/auth'
@@ -24,6 +25,12 @@ const router = createRouter({
       name: 'upload',
       component: UploadView,
       meta: { title: 'Загрузка', requiresAuth: true },
+    },
+    {
+      path: '/history',
+      name: 'history',
+      component: HistoryView,
+      meta: { title: 'История обработок', requiresAuth: true },
     },
     { path: '/demo', name: 'demo', component: ResultDemoView, meta: { title: 'Пример экрана' } },
     {
