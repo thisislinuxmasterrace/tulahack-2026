@@ -69,6 +69,57 @@ function floatTo16BitPCM(float32: Float32Array): Int16Array {
   return out
 }
 
+/** Как у шлюза: макс. 50 MiB (см. backend maxUploadBytes). */
+export const CLIENT_MAX_AUDIO_BYTES = 50 << 20
+
+function mixAudioBufferToMono(buffer: AudioBuffer): Float32Array {
+  const n = buffer.numberOfChannels
+  const len = buffer.length
+  if (n === 1) {
+    return Float32Array.from(buffer.getChannelData(0))
+  }
+  const out = new Float32Array(len)
+  for (let c = 0; c < n; c++) {
+    const ch = buffer.getChannelData(c)
+    for (let i = 0; i < len; i++) {
+      out[i] += ch[i] / n
+    }
+  }
+  return out
+}
+
+/**
+ * Любой формат, который умеет декодировать браузер → MP3 (моно 44.1 kHz).
+ * Уже `.mp3` возвращает тот же файл без перекодирования.
+ */
+export async function convertAudioFileToMp3IfNeeded(file: File): Promise<File> {
+  if (file.size > CLIENT_MAX_AUDIO_BYTES) {
+    throw new Error('file_too_large')
+  }
+  const lower = file.name.trim().toLowerCase()
+  if (lower.endsWith('.mp3')) {
+    dbg('convertAudioFileToMp3IfNeeded: pass-through', file.name)
+    return file
+  }
+  dbg('convertAudioFileToMp3IfNeeded: decode+encode', file.name, file.type, file.size)
+  const raw = await file.arrayBuffer()
+  const AC = audioContextCtor()
+  const ctx = new AC()
+  let audio: AudioBuffer
+  try {
+    audio = await ctx.decodeAudioData(raw.slice(0))
+  } catch (err) {
+    dbgErr('decodeAudioData failed', err)
+    throw new Error('decode_failed')
+  } finally {
+    await ctx.close().catch(() => {})
+  }
+  const mono = mixAudioBufferToMono(audio)
+  const base = file.name.replace(/[/\\]/g, '').replace(/\.[^.]+$/, '') || 'audio'
+  const outName = `${base}.mp3`
+  return floatMonoToMp3File(mono, audio.sampleRate, outName)
+}
+
 async function encodePcmToMp3Blob(pcm: Int16Array): Promise<Blob> {
   dbg('encodePcmToMp3Blob: pcm samples', pcm.length)
   const Mp3Encoder = await getMp3EncoderClass()

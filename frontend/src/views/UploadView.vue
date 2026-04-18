@@ -5,7 +5,12 @@ import { useRouter } from 'vue-router'
 import PageIntro from '../components/ui/PageIntro.vue'
 import UiButton from '../components/ui/UiButton.vue'
 import UiCard from '../components/ui/UiCard.vue'
-import { createLiveMp3Capture, isLiveCaptureSupported, type LiveMp3Capture } from '../lib/recordToMp3'
+import {
+  convertAudioFileToMp3IfNeeded,
+  createLiveMp3Capture,
+  isLiveCaptureSupported,
+  type LiveMp3Capture,
+} from '../lib/recordToMp3'
 import { uploadAudio } from '../lib/uploadsApi'
 
 const router = useRouter()
@@ -18,6 +23,7 @@ const loading = ref(false)
 
 const recording = ref(false)
 const encoding = ref(false)
+const converting = ref(false)
 let liveCapture: LiveMp3Capture | null = null
 
 const canUseMic = computed(() => isLiveCaptureSupported())
@@ -26,18 +32,71 @@ function onDrop(e: DragEvent) {
   e.preventDefault()
   dragActive.value = false
   const f = e.dataTransfer?.files?.[0]
-  if (f) pickFile(f)
+  if (f) void processPickedFile(f)
 }
 
 function onFile(e: Event) {
   const input = e.target as HTMLInputElement
   const f = input.files?.[0]
-  if (f) pickFile(f)
+  if (f) void processPickedFile(f)
+  input.value = ''
 }
 
-function isMp3File(f: File): boolean {
-  const n = f.name.trim().toLowerCase()
-  return n.endsWith('.mp3')
+function looksLikeAudioFile(f: File): boolean {
+  if (f.type.startsWith('audio/')) {
+    return true
+  }
+  const n = f.name.toLowerCase()
+  return ['.mp3', '.wav', '.ogg', '.oga', '.opus', '.webm', '.m4a', '.aac', '.flac', '.mp4', '.caf'].some(
+    (ext) => n.endsWith(ext),
+  )
+}
+
+async function processPickedFile(f: File) {
+  if (recording.value) {
+    requestCancelRecording()
+  }
+  if (!looksLikeAudioFile(f)) {
+    fileName.value = null
+    fileRef.value = null
+    note.value =
+      'Нужен аудиофайл (например WAV, OGG, M4A, FLAC). Расширение или тип MIME должны быть аудио.'
+    return
+  }
+  fileRef.value = null
+  fileName.value = null
+  const isAlreadyMp3 = f.name.trim().toLowerCase().endsWith('.mp3')
+  try {
+    if (!isAlreadyMp3) {
+      converting.value = true
+      note.value = 'Конвертация в MP3 в браузере…'
+    } else {
+      note.value = ''
+    }
+    const ready = await convertAudioFileToMp3IfNeeded(f)
+    fileRef.value = ready
+    fileName.value = ready.name
+    note.value = isAlreadyMp3 ? '' : 'Файл сконвертирован в MP3. Нажмите «Загрузить и обработать».'
+  } catch (e) {
+    fileName.value = null
+    fileRef.value = null
+    if (e instanceof Error) {
+      if (e.message === 'file_too_large') {
+        note.value = 'Файл больше 50 МБ — такой же лимит на сервере.'
+      } else if (e.message === 'decode_failed') {
+        note.value =
+          'Браузер не смог прочитать этот контейнер/кодек. Сохраните как WAV или MP3 и попробуйте снова.'
+      } else if (e.message === 'too_short') {
+        note.value = 'В файле слишком мало аудио.'
+      } else {
+        note.value = `Не удалось сделать MP3: ${e.message}`
+      }
+    } else {
+      note.value = 'Не удалось сделать MP3.'
+    }
+  } finally {
+    converting.value = false
+  }
 }
 
 function requestCancelRecording() {
@@ -45,21 +104,6 @@ function requestCancelRecording() {
   liveCapture?.cancel()
   liveCapture = null
   recording.value = false
-}
-
-function pickFile(f: File) {
-  if (recording.value) {
-    requestCancelRecording()
-  }
-  if (!isMp3File(f)) {
-    fileName.value = null
-    fileRef.value = null
-    note.value = 'Поддерживается только формат MP3. Выберите файл с расширением .mp3.'
-    return
-  }
-  fileName.value = f.name
-  fileRef.value = f
-  note.value = ''
 }
 
 async function startRecording() {
@@ -164,15 +208,17 @@ async function upload() {
   }
 }
 
-const uploadDisabled = computed(() => loading.value || encoding.value || !fileRef.value)
-const recordBusy = computed(() => recording.value || encoding.value)
+const uploadDisabled = computed(
+  () => loading.value || encoding.value || converting.value || !fileRef.value,
+)
+const recordBusy = computed(() => recording.value || encoding.value || converting.value)
 </script>
 
 <template>
   <div class="upload">
     <PageIntro
       title="Загрузка записи"
-      subtitle="Войдите в аккаунт. Можно загрузить готовый MP3, надиктовать текст в микрофон (сохранится как MP3) или перетащить файл сюда."
+      subtitle="Войдите в аккаунт. Подойдёт MP3 или другой аудиоформат: в браузере он будет переведён в MP3 перед отправкой. Можно также надиктовать в микрофон."
     />
 
     <UiCard title="Файл">
@@ -188,8 +234,8 @@ const recordBusy = computed(() => recording.value || encoding.value)
           <input
             class="drop__input"
             type="file"
-            accept=".mp3,audio/mpeg,audio/mp3"
-            :disabled="recording || encoding"
+            accept="audio/*,.mp3,.wav,.ogg,.oga,.opus,.webm,.m4a,.aac,.flac,.mp4,.caf"
+            :disabled="recordBusy"
             @change="onFile"
           />
           <span class="drop__icon" aria-hidden="true">
@@ -197,8 +243,8 @@ const recordBusy = computed(() => recording.value || encoding.value)
               <path d="M12 5v11m0 0l-3.5-3.5M12 16l3.5-3.5M5 19h14" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </span>
-          <span class="drop__title">Перетащите MP3 сюда</span>
-          <span class="drop__sub">или нажмите, чтобы выбрать .mp3</span>
+          <span class="drop__title">Перетащите аудио сюда</span>
+          <span class="drop__sub">WAV, OGG, M4A… — перед загрузкой станет MP3 в этом окне</span>
         </label>
       </div>
 
@@ -209,7 +255,9 @@ const recordBusy = computed(() => recording.value || encoding.value)
 
       <div class="upload__row">
         <UiButton type="button" variant="primary" :disabled="uploadDisabled" @click="upload">
-          {{ loading ? 'Загрузка…' : 'Загрузить и обработать' }}
+          {{
+            loading ? 'Загрузка…' : converting ? 'Конвертация…' : 'Загрузить и обработать'
+          }}
         </UiButton>
       </div>
     </UiCard>
