@@ -7,11 +7,12 @@ import tempfile
 from typing import Annotated, Any, Optional
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
-from faster_whisper import WhisperModel
+from faster_whisper import BatchedInferencePipeline, WhisperModel
 
 app = FastAPI(title="STT Worker", version="0.1.0")
 
 _model: Optional[WhisperModel] = None
+_batched_model: Optional[BatchedInferencePipeline] = None
 
 
 def _token_ok(authorization: str | None) -> bool:
@@ -38,14 +39,15 @@ def _segment_quality_from_whisper(seg: Any) -> tuple[float, float]:
     )
 
 
-def get_model() -> WhisperModel:
-    global _model
-    if _model is None:
-        name = os.getenv("WHISPER_MODEL", "small")
+def get_model() -> BatchedInferencePipeline:
+    global _model, _batched_model
+    if _batched_model is None:
+        name = os.getenv("WHISPER_MODEL", "large-v3")
         device = os.getenv("WHISPER_DEVICE", "cuda")
-        ctype = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
+        ctype = os.getenv("WHISPER_COMPUTE_TYPE", "int8_float16")
         _model = WhisperModel(name, device=device, compute_type=ctype)
-    return _model
+        _batched_model = BatchedInferencePipeline(model=_model)
+    return _batched_model
 
 
 def _word_to_dict(w: Any) -> dict[str, Any]:
