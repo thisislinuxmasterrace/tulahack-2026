@@ -20,7 +20,7 @@ function safeBaseName(name: string): string {
 
 function originalDownloadName(): string {
   const base = safeBaseName(props.fileName)
-  return /\.(mp3|wav|ogg|webm|m4a|flac|aac)$/i.test(base) ? base : `${base}.mp3`
+  return /\.mp3$/i.test(base) ? base : `${base}.mp3`
 }
 
 function redactedDownloadName(): string {
@@ -47,32 +47,15 @@ const live = computed(() => !!(props.audioSrc && props.audioSrc.length > 0))
 const currentLabel = computed(() => formatTime(progress.value * effectiveDuration.value))
 const totalLabel = computed(() => formatTime(effectiveDuration.value))
 
-/**
- * Длительность шкалы: зоны маскировки в ResultView считаются от `duration_sec` из STT (props.durationSec).
- * Для OGG/Opus браузер часто даёт заниженный `audio.duration` по метаданным — нельзя использовать его
- * как единственный источник, иначе общее время и playhead расходятся с полосой редукций.
- */
+/** До появления метаданных у `<audio>` — длительность из STT; затем длительность из файла (MP3). */
 const effectiveDuration = computed(() => {
-  const whisper = props.durationSec > 0 ? props.durationSec : 0
-  const fromRef = mediaDurationSec.value > 0 ? mediaDurationSec.value : 0
-  const el = audioRef.value
-  const fromEl =
-    live.value &&
-    el &&
-    typeof el.duration === 'number' &&
-    !Number.isNaN(el.duration) &&
-    el.duration > 0 &&
-    el.duration !== Number.POSITIVE_INFINITY
-      ? el.duration
-      : 0
-  const mediaMax = Math.max(fromRef, fromEl)
-  if (whisper > 0) {
-    return Math.max(whisper, mediaMax)
+  if (mediaDurationSec.value > 0) {
+    return mediaDurationSec.value
   }
-  if (mediaMax > 0) {
-    return mediaMax
+  if (props.durationSec > 0) {
+    return props.durationSec
   }
-  return Math.max(0.1, whisper)
+  return 0.1
 })
 
 function syncDurationFromElement() {

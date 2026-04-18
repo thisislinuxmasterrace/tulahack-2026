@@ -28,7 +28,18 @@ function onFile(e: Event) {
   if (f) pickFile(f)
 }
 
+function isMp3File(f: File): boolean {
+  const n = f.name.trim().toLowerCase()
+  return n.endsWith('.mp3')
+}
+
 function pickFile(f: File) {
+  if (!isMp3File(f)) {
+    fileName.value = null
+    fileRef.value = null
+    note.value = 'Поддерживается только формат MP3. Выберите файл с расширением .mp3.'
+    return
+  }
   fileName.value = f.name
   fileRef.value = f
   note.value = ''
@@ -76,7 +87,7 @@ async function upload() {
   <div class="upload">
     <PageIntro
       title="Загрузка записи"
-      subtitle="Войдите в аккаунт, затем перетащите аудиофайл сюда или выберите его на устройстве. Подойдут распространённые форматы записи."
+      subtitle="Войдите в аккаунт, затем перетащите файл сюда или выберите его на устройстве. Принимаются только записи в формате MP3."
     />
 
     <UiCard title="Файл">
@@ -92,7 +103,7 @@ async function upload() {
           <input
             class="drop__input"
             type="file"
-            accept="audio/*,.wav,.mp3,.ogg,.webm"
+            accept=".mp3,audio/mpeg,audio/mp3"
             @change="onFile"
           />
           <span class="drop__icon" aria-hidden="true">
@@ -100,8 +111,8 @@ async function upload() {
               <path d="M12 5v11m0 0l-3.5-3.5M12 16l3.5-3.5M5 19h14" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </span>
-          <span class="drop__title">Перетащите аудио сюда</span>
-          <span class="drop__sub">или нажмите, чтобы выбрать файл</span>
+          <span class="drop__title">Перетащите MP3 сюда</span>
+          <span class="drop__sub">или нажмите, чтобы выбрать .mp3</span>
         </label>
       </div>
 

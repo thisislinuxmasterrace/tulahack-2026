@@ -24,12 +24,6 @@ import (
 
 const maxUploadBytes = 50 << 20 // макс. 50 МиБ
 
-var allowedAudioPrefixes = []string{
-	"audio/",
-	"application/ogg",
-	"application/octet-stream", // часто для wav без точного MIME
-}
-
 // UploadHandlers — multipart-загрузка аудио в MinIO, Postgres и очередь Redis.
 type UploadHandlers struct {
 	Pool   *pgxpool.Pool
@@ -81,9 +75,9 @@ func (h *UploadHandlers) upload(w http.ResponseWriter, r *http.Request) {
 	if ct == "" {
 		ct = mime.TypeByExtension(strings.ToLower(path.Ext(hdr.Filename)))
 	}
-	if !isAllowedAudio(ct, hdr.Filename) {
-		log.Printf("загрузка аудио: отклонён файл \"%s\" (тип %q) — не похоже на аудио", hdr.Filename, ct)
-		writeAPIError(w, http.StatusUnprocessableEntity, "validation_error", "file must be an audio type")
+	if !isAllowedMP3(ct, hdr.Filename) {
+		log.Printf("загрузка аудио: отклонён файл \"%s\" (тип %q) — требуется MP3", hdr.Filename, ct)
+		writeAPIError(w, http.StatusUnprocessableEntity, "validation_error", "file must be MP3 (audio/mpeg)")
 		return
 	}
 
@@ -184,39 +178,29 @@ func (h *UploadHandlers) upload(w http.ResponseWriter, r *http.Request) {
 	log.Printf("загрузка аудио: готово — HTTP 201, upload_id=%s, processing_job_id=%s", u.ID, jobID)
 }
 
-func isAllowedAudio(contentType, filename string) bool {
+func isAllowedMP3(contentType, filename string) bool {
 	ext := strings.ToLower(path.Ext(filename))
-	switch ext {
-	case ".wav", ".mp3", ".ogg", ".webm", ".m4a", ".flac", ".aac":
-		return true
+	if ext != ".mp3" {
+		return false
 	}
 	ct := strings.ToLower(strings.TrimSpace(contentType))
-	for _, p := range allowedAudioPrefixes {
-		if strings.HasPrefix(ct, p) {
-			return true
-		}
+	if ct == "" {
+		return true
 	}
-	if ct == "application/octet-stream" {
-		switch ext {
-		case ".wav", ".mp3", ".ogg", ".webm", ".m4a", ".flac", ".aac":
-			return true
-		}
+	switch ct {
+	case "audio/mpeg", "audio/mp3", "audio/mpeg3", "audio/x-mpeg":
+		return true
+	case "application/octet-stream":
+		return true
+	default:
+		return false
 	}
-	return false
 }
 
 func extFromContentType(ct string) string {
 	switch strings.ToLower(ct) {
-	case "audio/wav", "audio/x-wav", "audio/wave":
-		return ".wav"
-	case "audio/mpeg", "audio/mp3":
+	case "audio/mpeg", "audio/mp3", "audio/mpeg3", "audio/x-mpeg":
 		return ".mp3"
-	case "audio/ogg":
-		return ".ogg"
-	case "audio/webm":
-		return ".webm"
-	case "audio/mp4", "audio/x-m4a":
-		return ".m4a"
 	default:
 		return ""
 	}
