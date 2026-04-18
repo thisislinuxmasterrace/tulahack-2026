@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import PageIntro from '../components/ui/PageIntro.vue'
 import UiButton from '../components/ui/UiButton.vue'
 import UiCard from '../components/ui/UiCard.vue'
+import { preferredRecorderMimeType, recordedBlobToMp3File } from '../lib/recordToMp3'
 import { uploadAudio } from '../lib/uploadsApi'
 
 const router = useRouter()
@@ -14,6 +15,25 @@ const fileName = ref<string | null>(null)
 const fileRef = ref<File | null>(null)
 const note = ref('')
 const loading = ref(false)
+
+const recording = ref(false)
+const encoding = ref(false)
+const cancelRequested = ref(false)
+const micStream = ref<MediaStream | null>(null)
+const mediaRecorder = ref<MediaRecorder | null>(null)
+let recordChunksBuf: Blob[] = []
+
+const canUseMic = computed(
+  () =>
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof MediaRecorder !== 'undefined',
+)
+
+function stopMicTracks() {
+  micStream.value?.getTracks().forEach((t) => t.stop())
+  micStream.value = null
+}
 
 function onDrop(e: DragEvent) {
   e.preventDefault()
@@ -33,7 +53,24 @@ function isMp3File(f: File): boolean {
   return n.endsWith('.mp3')
 }
 
+function requestCancelRecording() {
+  cancelRequested.value = true
+  const mr = mediaRecorder.value
+  if (mr && mr.state !== 'inactive') {
+    mr.stop()
+  } else {
+    cancelRequested.value = false
+    recordChunksBuf = []
+    recording.value = false
+    stopMicTracks()
+    mediaRecorder.value = null
+  }
+}
+
 function pickFile(f: File) {
+  if (recording.value) {
+    requestCancelRecording()
+  }
   if (!isMp3File(f)) {
     fileName.value = null
     fileRef.value = null
@@ -45,10 +82,100 @@ function pickFile(f: File) {
   note.value = ''
 }
 
+async function startRecording() {
+  if (!canUseMic.value) {
+    note.value = 'В этом браузере недоступна запись с микрофона.'
+    return
+  }
+  note.value = ''
+  cancelRequested.value = false
+  recordChunksBuf = []
+  fileRef.value = null
+  fileName.value = null
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    })
+    micStream.value = stream
+    const mime = preferredRecorderMimeType()
+    const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
+    mediaRecorder.value = mr
+    mr.ondataavailable = (ev) => {
+      if (ev.data.size > 0) {
+        recordChunksBuf.push(ev.data)
+      }
+    }
+    mr.onstop = () => {
+      stopMicTracks()
+      mediaRecorder.value = null
+      const dropped = cancelRequested.value
+      cancelRequested.value = false
+      const chunks = recordChunksBuf
+      recordChunksBuf = []
+      recording.value = false
+      if (dropped) {
+        return
+      }
+      const mimeType = mr.mimeType || 'audio/webm'
+      const recorded = new Blob(chunks, { type: mimeType })
+      void finishRecordingToMp3(recorded)
+    }
+    mr.start(250)
+    recording.value = true
+  } catch {
+    note.value = 'Не удалось получить доступ к микрофону. Разрешите запись в настройках браузера.'
+    recording.value = false
+    stopMicTracks()
+    mediaRecorder.value = null
+    recordChunksBuf = []
+  }
+}
+
+async function finishRecordingToMp3(recorded: Blob) {
+  encoding.value = true
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5)
+    const name = `nadiktovka-${stamp}.mp3`
+    const file = await recordedBlobToMp3File(recorded, name)
+    fileRef.value = file
+    fileName.value = file.name
+    note.value = 'Запись сохранена как MP3. Нажмите «Загрузить и обработать».'
+  } catch {
+    note.value =
+      'Не удалось преобразовать запись в MP3. Попробуйте другой браузер или загрузите готовый .mp3 файл.'
+  } finally {
+    encoding.value = false
+  }
+}
+
+function stopRecording() {
+  cancelRequested.value = false
+  const mr = mediaRecorder.value
+  if (mr && mr.state !== 'inactive') {
+    mr.stop()
+  }
+}
+
+onBeforeUnmount(() => {
+  cancelRequested.value = true
+  const mr = mediaRecorder.value
+  if (mr && mr.state !== 'inactive') {
+    mr.stop()
+  } else {
+    stopMicTracks()
+    mediaRecorder.value = null
+    recordChunksBuf = []
+    recording.value = false
+  }
+})
+
 async function upload() {
   const f = fileRef.value
   if (!f) {
-    note.value = 'Сначала выберите файл.'
+    note.value = 'Сначала выберите файл или запишите аудио.'
     return
   }
   note.value = ''
@@ -81,13 +208,15 @@ async function upload() {
   }
 }
 
+const uploadDisabled = computed(() => loading.value || encoding.value || !fileRef.value)
+const recordBusy = computed(() => recording.value || encoding.value)
 </script>
 
 <template>
   <div class="upload">
     <PageIntro
       title="Загрузка записи"
-      subtitle="Войдите в аккаунт, затем перетащите файл сюда или выберите его на устройстве. Принимаются только записи в формате MP3."
+      subtitle="Войдите в аккаунт. Можно загрузить готовый MP3, надиктовать текст в микрофон (сохранится как MP3) или перетащить файл сюда."
     />
 
     <UiCard title="Файл">
@@ -104,6 +233,7 @@ async function upload() {
             class="drop__input"
             type="file"
             accept=".mp3,audio/mpeg,audio/mp3"
+            :disabled="recording || encoding"
             @change="onFile"
           />
           <span class="drop__icon" aria-hidden="true">
@@ -122,11 +252,39 @@ async function upload() {
       <p v-if="note" class="upload__note">{{ note }}</p>
 
       <div class="upload__row">
-        <UiButton type="button" variant="primary" :disabled="loading || !fileRef" @click="upload">
+        <UiButton type="button" variant="primary" :disabled="uploadDisabled" @click="upload">
           {{ loading ? 'Загрузка…' : 'Загрузить и обработать' }}
         </UiButton>
       </div>
     </UiCard>
+
+    <UiCard v-if="canUseMic" class="upload__mic-card" title="Надиктовка">
+      <p class="upload__mic-hint">
+        Запись в браузере конвертируется в MP3 на устройстве и отправляется так же, как при выборе файла.
+      </p>
+      <div class="upload__row upload__row--mic">
+        <UiButton
+          type="button"
+          variant="primary"
+          :disabled="recordBusy || loading"
+          @click="startRecording"
+        >
+          {{ recording ? 'Идёт запись…' : encoding ? 'Обработка…' : 'Начать запись' }}
+        </UiButton>
+        <UiButton
+          type="button"
+          variant="secondary"
+          :disabled="!recording || loading"
+          @click="stopRecording"
+        >
+          Закончить и сохранить
+        </UiButton>
+        <UiButton type="button" variant="ghost" :disabled="!recording || loading" @click="requestCancelRecording">
+          Отменить
+        </UiButton>
+      </div>
+    </UiCard>
+    <p v-else class="upload__no-mic">Запись с микрофона в этом браузере недоступна — используйте загрузку файла.</p>
   </div>
 </template>
 
@@ -164,6 +322,17 @@ async function upload() {
   width: 100%;
   height: 100%;
   cursor: pointer;
+}
+
+.drop__input:disabled + .drop__icon,
+.drop__input:disabled ~ .drop__title,
+.drop__input:disabled ~ .drop__sub {
+  opacity: 0.45;
+}
+
+.drop__input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .drop__icon {
@@ -204,5 +373,26 @@ async function upload() {
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
+}
+
+.upload__mic-card {
+  margin-top: 1rem;
+}
+
+.upload__mic-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.upload__row--mic {
+  margin-top: 1rem;
+}
+
+.upload__no-mic {
+  margin: 1rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 </style>
