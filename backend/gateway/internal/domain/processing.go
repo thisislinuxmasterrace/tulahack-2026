@@ -1,6 +1,9 @@
 package domain
 
 // Статусы processing_jobs.status — синхронизировать с internal/migrate/migrations/schema.sql.
+//
+// Типичный порядок пайплайна: queued → running → stt → llm → render_audio → done | failed.
+// Дополнительно допустим cancelled (резерв; в runner пока не выставляется).
 const (
 	JobQueued        = "queued"
 	JobRunning       = "running"

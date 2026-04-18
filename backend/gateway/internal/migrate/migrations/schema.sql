@@ -1,5 +1,3 @@
--- Полная схема БД при первом запуске (без истории миграций).
-
 CREATE TABLE IF NOT EXISTS users (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     username text NOT NULL UNIQUE,
@@ -34,7 +32,7 @@ CREATE TABLE IF NOT EXISTS audio_uploads (
 CREATE INDEX IF NOT EXISTS idx_audio_uploads_user_id ON audio_uploads (user_id);
 CREATE INDEX IF NOT EXISTS idx_audio_uploads_created_at ON audio_uploads (created_at DESC);
 
--- Пайплайн: Whisper (STT) → Llama (сущности ПДн) → при необходимости рендер аудио.
+-- Пайплайн (processing_jobs.status): queued -> running -> stt -> llm -> render_audio -> done | failed (+ cancelled при отмене).
 
 CREATE TABLE IF NOT EXISTS processing_jobs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

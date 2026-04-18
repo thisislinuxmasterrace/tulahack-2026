@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// JobStatusCacheKey — ключ для снимка статуса задачи после фиксации транзакции в Postgres (совпадает с workers/runner).
+// JobStatusCacheKey — ключ для снимка статуса задачи после фиксации транзакции в Postgres (совпадает с backend/runner).
 func JobStatusCacheKey(uploadID uuid.UUID) string {
 	prefix := strings.TrimSpace(os.Getenv("REDIS_JOB_STATUS_KEY_PREFIX"))
 	if prefix == "" {
