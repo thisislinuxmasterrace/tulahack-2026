@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import HomeView from '../views/HomeView.vue'
 import UploadView from '../views/UploadView.vue'
-import ResultDemoView from '../views/ResultDemoView.vue'
 import ResultView from '../views/ResultView.vue'
 import HistoryView from '../views/HistoryView.vue'
 import LoginView from '../views/LoginView.vue'
@@ -32,7 +31,6 @@ const router = createRouter({
       component: HistoryView,
       meta: { title: 'История обработок', requiresAuth: true },
     },
-    { path: '/demo', name: 'demo', component: ResultDemoView, meta: { title: 'Пример экрана' } },
     {
       path: '/result/:uploadId',
       name: 'result',

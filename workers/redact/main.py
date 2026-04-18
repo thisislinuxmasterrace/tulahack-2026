@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from io import BytesIO
 from typing import Annotated, Any, Optional
@@ -9,6 +10,8 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadF
 from fastapi.responses import Response
 from pydub import AudioSegment
 from pydub.generators import Sine
+
+LOG = logging.getLogger("audio_redact")
 
 app = FastAPI(title="Audio redact worker", version="0.1.0")
 
@@ -37,7 +40,35 @@ def load_spans(data: dict[str, Any]) -> list[dict[str, Any]]:
             and "start_ms" in ent
             and "end_ms" in ent
         ]
-    return [s for s in spans if isinstance(s, dict)]
+    raw = [s for s in spans if isinstance(s, dict)]
+    return merge_spans_ms(raw)
+
+
+def merge_spans_ms(spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Склеивает пересекающиеся и сомкнутые интервалы — повторные ffmpeg-нарезки одного куска не портят длительность."""
+    pairs: list[tuple[int, int]] = []
+    for s in spans:
+        try:
+            a = int(s.get("start_ms", 0))
+            b = int(s.get("end_ms", 0))
+        except (TypeError, ValueError):
+            continue
+        if b > a >= 0:
+            pairs.append((a, b))
+    if not pairs:
+        return []
+    pairs.sort()
+    out: list[tuple[int, int]] = []
+    for a, b in pairs:
+        if not out:
+            out.append((a, b))
+            continue
+        pa, pb = out[-1]
+        if a <= pb + 1:
+            out[-1] = (pa, max(pb, b))
+        else:
+            out.append((a, b))
+    return [{"start_ms": a, "end_ms": b} for a, b in out]
 
 
 def export_format_and_mime(filename: str | None, content_type: str | None) -> tuple[str, str, dict[str, Any]]:
@@ -98,15 +129,33 @@ def _end_pad_ms() -> int:
         return 80
 
 
+def _start_pad_ms() -> int:
+    try:
+        return max(0, int(os.getenv("REDACT_START_PAD_MS", "0")))
+    except ValueError:
+        return 0
+
+
+def _snap_duration_ms(audio: AudioSegment, target_ms: int) -> AudioSegment:
+    """Сведение длительности после decode→encode: MP3/OGG дают сдвиг по семплам; подгоняем к входу."""
+    cur = len(audio)
+    if cur == target_ms:
+        return audio
+    if cur < target_ms:
+        return audio + AudioSegment.silent(duration=target_ms - cur)
+    return audio[:target_ms]
+
+
 def apply_beep(audio: AudioSegment, spans: list[dict[str, Any]], freq: int = 1000, gain_db: int = -5) -> AudioSegment:
-    pad = _end_pad_ms()
+    pad_end = _end_pad_ms()
+    pad_start = _start_pad_ms()
     audio_len = len(audio)
     spans = sorted(spans, key=lambda x: int(x.get("start_ms", 0)), reverse=True)
     for span in spans:
-        start = int(span.get("start_ms", 0))
+        start = max(0, int(span.get("start_ms", 0)) - pad_start)
         end = int(span.get("end_ms", 0))
-        if pad:
-            end = min(audio_len, end + pad)
+        if pad_end:
+            end = min(audio_len, end + pad_end)
         duration = end - start
         if duration <= 0:
             continue
@@ -151,6 +200,8 @@ async def redact(
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"could not decode audio: {e}") from e
 
+    input_ms = len(audio)
+
     spans = load_spans(data)
     if spans:
         audio = apply_beep(audio, spans, freq=freq, gain_db=gain_db)
@@ -165,6 +216,34 @@ async def redact(
             detail=f"could not encode audio as {fmt}: {e}",
         ) from e
     body = out.getvalue()
+
+    max_drift = int(os.getenv("REDACT_MAX_DURATION_DRIFT_MS", "750"))
+    try:
+        check = AudioSegment.from_file(BytesIO(body))
+    except Exception as e:
+        LOG.warning("redact: could not re-decode output for duration check: %s", e)
+    else:
+        drift = abs(len(check) - input_ms)
+        if drift > max_drift:
+            LOG.warning(
+                "redact: duration drift %d ms > max %d (in=%d out=%d), snapping",
+                drift,
+                max_drift,
+                input_ms,
+                len(check),
+            )
+        if len(check) != input_ms:
+            check = _snap_duration_ms(check, input_ms)
+            out = BytesIO()
+            try:
+                check.export(out, format=fmt, **export_kw)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"could not re-encode after duration snap ({fmt}): {e}",
+                ) from e
+            body = out.getvalue()
+
     return Response(content=body, media_type=mime)
 
 

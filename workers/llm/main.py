@@ -101,19 +101,24 @@ def _word_local_char_ranges(seg: SegmentIn) -> list[tuple[int, int, float, float
     seg_text = seg.text.strip()
     if not seg_text or not seg.words:
         return None
-    pos = 0
     ranges: list[tuple[int, int, float, float]] = []
-    first = True
+    pos = 0
     for w in seg.words:
         tok = (w.word or "").strip()
         if not tok:
             continue
-        if not first:
-            pos += 1
-        first = False
-        ws = pos
-        pos += len(tok)
-        ranges.append((ws, pos, float(w.start), float(w.end)))
+        idx = seg_text.find(tok, pos)
+        if idx < 0:
+            return None
+        if idx > pos:
+            gap = seg_text[pos:idx]
+            if gap.strip():
+                return None
+        ws, we = idx, idx + len(tok)
+        ranges.append((ws, we, float(w.start), float(w.end)))
+        pos = we
+    while pos < len(seg_text) and seg_text[pos].isspace():
+        pos += 1
     if pos != len(seg_text):
         return None
     return ranges
@@ -160,6 +165,15 @@ def _redaction_end_pad_sec() -> float:
     return max(0, ms) / 1000.0
 
 
+def _redaction_start_pad_sec() -> float:
+    """Запас перед началом: начало цифр/слов в аудио часто раньше границы по символам при пропорции или VAD."""
+    try:
+        ms = int(os.getenv("REDACTION_START_MS_PAD", "120"))
+    except ValueError:
+        ms = 120
+    return max(0, ms) / 1000.0
+
+
 def _ms_from_sec_start(t: float) -> int:
     return max(0, int(math.floor(t * 1000 + 1e-9)))
 
@@ -193,6 +207,7 @@ def _char_span_to_time(segments: list[SegmentIn], full_text: str, cs: int, ce: i
             t1 = max(t1, en)
     if t0 is None or t1 is None:
         return 0.0, 0.0
+    t0 = max(0.0, t0 - _redaction_start_pad_sec())
     t1 = t1 + _redaction_end_pad_sec()
     return t0, t1
 
@@ -271,7 +286,7 @@ def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, 
 }}
 
 Правила для original (важно для точной подстановки звука):
-- Должен дословно совпадать с подстрокой текста выше.
+- Должен дословно совпадать с подстрокой текста выше (копипаст из того же текста), включая дефисы без пробелов: «9337-375», «10-20», если в тексте номер слитный; не разбивай на два original.
 - Делай original максимально коротким: только сами ПДн (цифры, дефисы, при необходимости одно слово-метка), без приветствий и без лишних слов («добрый день», «уточнить» и т.п.).
 - passport: только серия/номер как в тексте (например «988 032»), не целое предложение и не «паспорт номер …», если в тексте номер уже выделен отдельно.
 - inn / phone: по возможности только цифры и знаки номера; для телефона сохраняй «Плюс»/«+» только если так в тексте.

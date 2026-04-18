@@ -21,7 +21,7 @@ $env:WHISPER_COMPUTE_TYPE = "float16"
 $env:WHISPER_LANGUAGE = "ru"
 $env:WHISPER_WORD_TIMESTAMPS = "true"
 $env:WHISPER_MAX_PHRASE_SEC = "8"
-$env:WHISPER_VAD_MIN_SILENCE_MS = "400"
+$env:WHISPER_VAD_MIN_SILENCE_MS = "500"
 $env:WORKER_TOKEN = "your-token"
 uvicorn main:app --host 0.0.0.0 --port 8001
 ```

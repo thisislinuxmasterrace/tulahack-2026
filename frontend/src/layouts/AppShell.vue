@@ -32,7 +32,6 @@ function logout() {
         </RouterLink>
         <nav class="shell__nav" aria-label="Основная навигация">
           <RouterLink to="/" class="shell__link" active-class="shell__link--active">Главная</RouterLink>
-          <RouterLink to="/demo" class="shell__link" active-class="shell__link--active">Пример экрана</RouterLink>
           <template v-if="logged">
             <RouterLink to="/upload" class="shell__link" active-class="shell__link--active">Загрузка</RouterLink>
             <RouterLink to="/history" class="shell__link" active-class="shell__link--active">История</RouterLink>

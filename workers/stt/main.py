@@ -100,10 +100,24 @@ def _split_segment_by_max_duration(seg: Any, max_sec: float) -> list[dict[str, A
     return chunks
 
 
+def _text_from_word_dicts(words: list[dict[str, Any]]) -> str:
+    """Единый способ текста из токенов: как в faster-whisper (слитно, с пробелами внутри токенов)."""
+    return "".join(w["word"] for w in words if w.get("word") is not None).strip()
+
+
+def _finalize_segment(seg: dict[str, Any]) -> dict[str, Any]:
+    """Синхронизирует text с words — иначе downstream считает позиции по text, а тайминги по words."""
+    words = seg.get("words")
+    if isinstance(words, list) and words:
+        seg["text"] = _text_from_word_dicts(words)
+    return seg
+
+
 def _build_segments(segments_iter: Any, max_phrase_sec: float) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for seg in segments_iter:
-        out.extend(_split_segment_by_max_duration(seg, max_phrase_sec))
+        for part in _split_segment_by_max_duration(seg, max_phrase_sec):
+            out.append(_finalize_segment(part))
     return out
 
 
@@ -134,7 +148,7 @@ async def transcribe(
 
     word_ts = os.getenv("WHISPER_WORD_TIMESTAMPS", "true").lower() in ("1", "true", "yes")
     max_phrase = float(os.getenv("WHISPER_MAX_PHRASE_SEC", "8"))
-    vad_ms = int(os.getenv("WHISPER_VAD_MIN_SILENCE_MS", "400"))
+    vad_ms = int(os.getenv("WHISPER_VAD_MIN_SILENCE_MS", "500"))
 
     try:
         segments_iter, info = model.transcribe(

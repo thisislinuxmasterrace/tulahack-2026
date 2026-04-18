@@ -21,14 +21,13 @@ import UiCard from '../components/ui/UiCard.vue'
         </ol>
         <div class="home__actions">
           <UiButton to="/upload">Загрузить запись</UiButton>
-          <UiButton to="/demo" variant="secondary">Посмотреть пример экрана</UiButton>
         </div>
       </UiCard>
 
       <UiCard title="Подсказка" class="home__card home__card--aside">
         <p class="home__note">
-          После входа загрузите файл — откроется страница с результатом. Раздел
-          <strong>«Пример экрана»</strong> показывает интерфейс на демонстрационных данных, без загрузки вашего файла.
+          После входа загрузите файл — откроется страница с транскриптом, отчётом и аудио по мере готовности
+          обработки.
         </p>
       </UiCard>
     </div>

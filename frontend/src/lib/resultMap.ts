@@ -3,7 +3,7 @@ import type {
   RedactionStat,
   TimelineRedaction,
   TranscriptSegment,
-} from '../mocks/demoSession'
+} from '../types/result'
 
 const categoryLabels: Record<string, string> = {
   passport: 'Паспортные данные',

@@ -6,7 +6,6 @@ import AudioPlayerPanel from '../components/audio/AudioPlayerPanel.vue'
 import ProcessingLogPanel from '../components/report/ProcessingLogPanel.vue'
 import RedactionReport from '../components/report/RedactionReport.vue'
 import TranscriptPanel from '../components/transcript/TranscriptPanel.vue'
-import AudioDownloadBar from '../components/ui/AudioDownloadBar.vue'
 import PageIntro from '../components/ui/PageIntro.vue'
 import UiCard from '../components/ui/UiCard.vue'
 import UiButton from '../components/ui/UiButton.vue'
@@ -134,6 +133,17 @@ const playbackUrl = computed(() => {
     return uploadRedactedStreamUrl(uploadId.value)
   }
   return uploadOriginalStreamUrl(uploadId.value)
+})
+
+const originalDownloadHref = computed(() => {
+  if (!uploadId.value || !getAccessToken()) return null
+  return uploadOriginalStreamUrl(uploadId.value, { download: true })
+})
+
+const redactedDownloadHref = computed(() => {
+  if (!uploadId.value || !getAccessToken()) return null
+  if (job.value?.status !== 'done' || !redactedAudioUrl.value) return null
+  return uploadRedactedStreamUrl(uploadId.value, { download: true })
 })
 
 async function load(silent = false) {
@@ -327,12 +337,6 @@ onUnmounted(() => {
           </UiCard>
 
           <UiCard title="Аудио">
-            <AudioDownloadBar
-              v-if="uploadId"
-              :upload-id="uploadId"
-              :original-filename="fileName || 'recording'"
-              :redacted-available="job.status === 'done' && !!redactedAudioUrl"
-            />
             <div
               v-if="showTrackSwitch"
               class="result__track-switch"
@@ -361,6 +365,8 @@ onUnmounted(() => {
               :duration-sec="durationSec"
               :redactions="timeline"
               :audio-src="playbackUrl"
+              :original-download-href="originalDownloadHref"
+              :redacted-download-href="redactedDownloadHref"
             />
           </UiCard>
         </div>
@@ -381,7 +387,6 @@ onUnmounted(() => {
 
     <div class="result__footer">
       <UiButton type="button" variant="secondary" to="/upload">Новая загрузка</UiButton>
-      <UiButton type="button" variant="secondary" to="/demo">Пример экрана</UiButton>
       <UiButton type="button" variant="secondary" @click="router.push('/')">На главную</UiButton>
     </div>
   </div>

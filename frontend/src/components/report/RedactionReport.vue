@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { RedactionStat } from '../../mocks/demoSession'
+import type { RedactionStat } from '../../types/result'
 
 defineProps<{
   rows: RedactionStat[]

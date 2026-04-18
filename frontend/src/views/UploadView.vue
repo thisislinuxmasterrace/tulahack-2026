@@ -114,7 +114,6 @@ async function upload() {
         <UiButton type="button" variant="primary" :disabled="loading || !fileRef" @click="upload">
           {{ loading ? 'Загрузка…' : 'Загрузить и обработать' }}
         </UiButton>
-        <UiButton type="button" variant="secondary" to="/demo">Пример экрана</UiButton>
       </div>
     </UiCard>
   </div>

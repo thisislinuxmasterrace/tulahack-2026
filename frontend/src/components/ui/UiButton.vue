@@ -5,6 +5,8 @@ defineProps<{
   variant?: 'primary' | 'secondary' | 'ghost'
   block?: boolean
   to?: string
+  /** Не используется для ссылки (`to`). */
+  disabled?: boolean
 }>()
 </script>
 
@@ -18,6 +20,7 @@ defineProps<{
       variant === 'ghost' && 'btn--ghost',
       block && 'btn--block',
     ]"
+    :disabled="to ? undefined : disabled"
   >
     <slot />
   </component>
@@ -44,7 +47,7 @@ defineProps<{
     transform 0.1s;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--accent-hover);
   text-decoration: none;
 }
@@ -54,8 +57,22 @@ defineProps<{
   outline-offset: 2px;
 }
 
-.btn:active {
+.btn:active:not(:disabled) {
   transform: translateY(1px);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: none;
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  border-color: var(--border);
+  transform: none;
+}
+
+.btn:disabled:hover {
+  background: var(--bg-muted);
 }
 
 .btn--secondary {
@@ -65,7 +82,7 @@ defineProps<{
   box-shadow: none;
 }
 
-.btn--secondary:hover {
+.btn--secondary:hover:not(:disabled) {
   background: var(--bg-muted);
 }
 
@@ -75,8 +92,21 @@ defineProps<{
   box-shadow: none;
 }
 
-.btn--ghost:hover {
+.btn--ghost:hover:not(:disabled) {
   background: var(--accent-soft);
+}
+
+.btn--secondary:disabled,
+.btn--ghost:disabled {
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  border-color: var(--border);
+  opacity: 0.55;
+}
+
+.btn--ghost:disabled {
+  background: transparent;
+  border-color: transparent;
 }
 
 .btn--block {

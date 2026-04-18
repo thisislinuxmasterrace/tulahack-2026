@@ -1,14 +1,40 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
 
-import type { TimelineRedaction } from '../../mocks/demoSession'
+import type { TimelineRedaction } from '../../types/result'
 
 const props = defineProps<{
   fileName: string
   durationSec: number
   redactions: TimelineRedaction[]
   audioSrc?: string | null
+  /** Ссылки с `?access_token=` и `download=1` для сохранения файла. */
+  originalDownloadHref?: string | null
+  redactedDownloadHref?: string | null
 }>()
+
+function safeBaseName(name: string): string {
+  const t = name.trim() || 'audio'
+  return t.replace(/[\\/:*?"<>|]+/g, '_')
+}
+
+function originalDownloadName(): string {
+  const base = safeBaseName(props.fileName)
+  return /\.(mp3|wav|ogg|webm|m4a|flac|aac)$/i.test(base) ? base : `${base}.mp3`
+}
+
+function redactedDownloadName(): string {
+  const base = safeBaseName(props.fileName)
+  const m = base.match(/^(.*)(\.[^.]+)$/)
+  const stem = m ? m[1] : base
+  const ext = m ? m[2] : '.mp3'
+  return `redacted_${stem}${ext}`
+}
+
+const showDownloads = computed(
+  () =>
+    !!(props.originalDownloadHref?.length || props.redactedDownloadHref?.length),
+)
 
 const audioRef = ref<HTMLAudioElement | null>(null)
 const mediaDurationSec = ref(0)
@@ -21,15 +47,32 @@ const live = computed(() => !!(props.audioSrc && props.audioSrc.length > 0))
 const currentLabel = computed(() => formatTime(progress.value * effectiveDuration.value))
 const totalLabel = computed(() => formatTime(effectiveDuration.value))
 
+/**
+ * Длительность шкалы: зоны маскировки в ResultView считаются от `duration_sec` из STT (props.durationSec).
+ * Для OGG/Opus браузер часто даёт заниженный `audio.duration` по метаданным — нельзя использовать его
+ * как единственный источник, иначе общее время и playhead расходятся с полосой редукций.
+ */
 const effectiveDuration = computed(() => {
-  if (mediaDurationSec.value > 0) {
-    return mediaDurationSec.value
-  }
+  const whisper = props.durationSec > 0 ? props.durationSec : 0
+  const fromRef = mediaDurationSec.value > 0 ? mediaDurationSec.value : 0
   const el = audioRef.value
-  if (live.value && el && el.duration && !Number.isNaN(el.duration) && el.duration > 0 && el.duration !== Number.POSITIVE_INFINITY) {
-    return el.duration
+  const fromEl =
+    live.value &&
+    el &&
+    typeof el.duration === 'number' &&
+    !Number.isNaN(el.duration) &&
+    el.duration > 0 &&
+    el.duration !== Number.POSITIVE_INFINITY
+      ? el.duration
+      : 0
+  const mediaMax = Math.max(fromRef, fromEl)
+  if (whisper > 0) {
+    return Math.max(whisper, mediaMax)
   }
-  return Math.max(0.1, props.durationSec)
+  if (mediaMax > 0) {
+    return mediaMax
+  }
+  return Math.max(0.1, whisper)
 })
 
 function syncDurationFromElement() {
@@ -75,18 +118,23 @@ function togglePlay() {
 
 function onTimeUpdate() {
   const el = audioRef.value
-  if (!el || !el.duration || el.duration <= 0) return
+  if (!el) return
+  const dur = effectiveDuration.value
+  if (dur <= 0) return
   if (mediaDurationSec.value <= 0) {
     syncDurationFromElement()
   }
-  progress.value = el.currentTime / el.duration
+  progress.value = Math.min(1, el.currentTime / dur)
 }
 
 function onLoadedMetadata() {
   syncDurationFromElement()
   const el = audioRef.value
-  if (el && el.duration > 0) {
-    progress.value = el.currentTime / el.duration
+  if (el) {
+    const dur = effectiveDuration.value
+    if (dur > 0) {
+      progress.value = Math.min(1, el.currentTime / dur)
+    }
   }
 }
 
@@ -112,9 +160,20 @@ function seekClientX(clientX: number, el: HTMLElement) {
   const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
   progress.value = ratio
   const a = audioRef.value
-  if (live.value && a && a.duration) {
-    a.currentTime = ratio * a.duration
+  const dur = effectiveDuration.value
+  if (!live.value || !a || dur <= 0) {
+    return
   }
+  let t = ratio * dur
+  if (
+    typeof a.duration === 'number' &&
+    !Number.isNaN(a.duration) &&
+    a.duration > 0 &&
+    t > a.duration
+  ) {
+    t = a.duration
+  }
+  a.currentTime = t
 }
 
 function onTimelinePointerDown(e: PointerEvent) {
@@ -172,6 +231,37 @@ onUnmounted(() => cancelAnimationFrame(raf))
         <span class="player__name">{{ fileName }}</span>
         <span class="player__time">{{ currentLabel }} / {{ totalLabel }}</span>
       </div>
+
+      <div v-if="showDownloads" class="player__downloads" role="group" aria-label="Скачать аудио">
+        <a
+          v-if="originalDownloadHref"
+          class="player__dl"
+          :href="originalDownloadHref"
+          :download="originalDownloadName()"
+          :title="`Скачать исходное: ${originalDownloadName()}`"
+        >
+          <span class="player__dl-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3v12m0 0l4-4m-4 4L8 11M4 21h16" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="player__dl-text">Исходное</span>
+        </a>
+        <a
+          v-if="redactedDownloadHref"
+          class="player__dl player__dl--accent"
+          :href="redactedDownloadHref"
+          :download="redactedDownloadName()"
+          :title="`Скачать обработанное: ${redactedDownloadName()}`"
+        >
+          <span class="player__dl-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3v12m0 0l4-4m-4 4L8 11M4 21h16" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="player__dl-text">Обработанное</span>
+        </a>
+      </div>
     </div>
 
     <div class="player__timeline-wrap">
@@ -219,6 +309,70 @@ onUnmounted(() => cancelAnimationFrame(raf))
   align-items: center;
   gap: 0.85rem;
   margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.player__downloads {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: auto;
+}
+
+.player__dl {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.38rem 0.72rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-strong);
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+  white-space: nowrap;
+}
+
+.player__dl:hover {
+  background: var(--bg-muted);
+  border-color: var(--border-strong);
+  text-decoration: none;
+}
+
+.player__dl--accent {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.player__dl--accent:hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+.player__dl-icon {
+  display: flex;
+  opacity: 0.9;
+}
+
+.player__dl-text {
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 520px) {
+  .player__downloads {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 .player__play {
