@@ -1,0 +1,135 @@
+/* Дизайн-токены (CSS-переменные) и сброс стилей */
+
+:root {
+  --font-sans: 'DM Sans', system-ui, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+
+  --bg: #f6f4f8;
+  --bg-elevated: #ffffff;
+  --bg-muted: #ece8f0;
+
+  --text: #3d3550;
+  --text-strong: #1a1424;
+  --text-muted: #6b6378;
+
+  --border: #e0d8e8;
+  --border-strong: #c9bdd4;
+
+  --accent: #6d28d9;
+  --accent-hover: #5b21b6;
+  --accent-soft: rgba(109, 40, 217, 0.1);
+  --accent-ring: rgba(109, 40, 217, 0.35);
+
+  --danger: #b91c1c;
+  --danger-soft: rgba(185, 28, 28, 0.12);
+  --danger-border: rgba(185, 28, 28, 0.35);
+
+  --timeline-redact: rgba(185, 28, 28, 0.35);
+  --shadow-sm: 0 1px 2px rgba(26, 20, 36, 0.06);
+  --shadow-md: 0 8px 24px rgba(26, 20, 36, 0.08);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --nav-h: 56px;
+  --max-w: 1120px;
+
+  color-scheme: light;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121018;
+    --bg-elevated: #1a1624;
+    --bg-muted: #242030;
+
+    --text: #c4bdd4;
+    --text-strong: #f4f0fb;
+    --text-muted: #8a8198;
+
+    --border: #2e283c;
+    --border-strong: #443a58;
+
+    --accent: #a78bfa;
+    --accent-hover: #c4b5fd;
+    --accent-soft: rgba(167, 139, 250, 0.12);
+    --accent-ring: rgba(167, 139, 250, 0.45);
+
+    --danger: #f87171;
+    --danger-soft: rgba(248, 113, 113, 0.15);
+    --danger-border: rgba(248, 113, 113, 0.4);
+
+    --timeline-redact: rgba(248, 113, 113, 0.35);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 12px 40px rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+}
+
+#app {
+  min-height: 100svh;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  color: var(--text-strong);
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  font-size: 1.75rem;
+  line-height: 1.2;
+  margin: 0 0 0.5rem;
+}
+
+h2 {
+  font-size: 1.125rem;
+  line-height: 1.3;
+  margin: 0 0 0.75rem;
+}
+
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
