@@ -11,7 +11,7 @@
 | [`backend/runner`](backend/runner/)   | В Docker на сервере: Redis -> MinIO -> HTTP к STT/LLM/redact -> MinIO/Postgres |
 | [`workers/stt`](workers/stt/)         | STT (распознание текста) `/v1/transcribe`                                      |
 | [`workers/llm`](workers/llm/)         | LLM (фильтрация данных для анонимизации) (`/v1/anonymize`                      |
-| [`workers/redact`](workers/redact/)   | Redact (нонимизация аудио) `/v1/redact`                                        |
+| [`workers/redact`](workers/redact/)   | Redact (анонимизация аудио) `/v1/redact`                                       |
 | [`frontend`](frontend/)               | Vue 3 + TypeScript + Router — см. [`frontend/README.md`](frontend/README.md)   |
 
 **Адреса воркеров:** `STT_BASE_URL`, `LLM_BASE_URL`, `REDACT_BASE_URL`, `WORKER_TOKEN` в env сервиса `runner` и на
