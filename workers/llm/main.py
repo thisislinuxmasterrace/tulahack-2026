@@ -23,6 +23,92 @@ ENTITY_TYPES = frozenset(
     }
 )
 
+# Типы, для которых можно восстановить span в тексте по последовательности цифр (модель могла нормализовать пробелы/запятые).
+_FLEX_DIGIT_TYPES = frozenset({"passport", "inn", "snils", "phone"})
+
+
+def _digits_only(s: str) -> str:
+    return "".join(c for c in s if c.isdigit())
+
+
+def _digits_plausible_for_type(et: str, td: str) -> bool:
+    if not td:
+        return False
+    if et == "inn":
+        return len(td) in (10, 12)
+    if et == "snils":
+        return len(td) == 11
+    if et == "phone":
+        return len(td) >= 10
+    if et == "passport":
+        return len(td) >= 4
+    return False
+
+
+def _spans_matching_digit_sequence(full_text: str, target_digits: str) -> list[tuple[int, int]]:
+    """Подстроки, у которых подряд идущие цифры (с допустимыми разделителями между ними) дают target_digits."""
+    if not target_digits:
+        return []
+    n = len(full_text)
+    seen: set[tuple[int, int]] = set()
+    out: list[tuple[int, int]] = []
+    sep = frozenset(" \t\n,.;:-–—")
+    for i in range(n):
+        if not full_text[i].isdigit():
+            continue
+        buf: list[str] = []
+        span_start = i
+        for j in range(i, n):
+            ch = full_text[j]
+            if ch.isdigit():
+                buf.append(ch)
+                ds = "".join(buf)
+                if ds == target_digits:
+                    sp = (span_start, j + 1)
+                    if sp not in seen:
+                        seen.add(sp)
+                        out.append(sp)
+                    break
+                if len(ds) > len(target_digits):
+                    break
+            elif buf:
+                if ch.isspace() or ch in sep:
+                    continue
+                break
+    return out
+
+
+def _span_candidates_from_model(
+    full_text: str,
+    orig: str,
+    orig_clean: str,
+    et: str,
+    item: dict[str, Any],
+) -> list[tuple[int, int]]:
+    """Точное вхождение original; опционально start_char/end_char; иначе совпадение по цепочке цифр для числовых типов."""
+    sc = item.get("start_char")
+    ec = item.get("end_char")
+    if isinstance(sc, int) and isinstance(ec, int) and 0 <= sc < ec <= len(full_text):
+        sub = full_text[sc:ec]
+        if et in _FLEX_DIGIT_TYPES:
+            td_o = _digits_only(orig)
+            td_s = _digits_only(sub)
+            if td_o and td_o == td_s and _digits_plausible_for_type(et, td_s):
+                return [(sc, ec)]
+        elif orig in sub or sub.strip() == orig_clean:
+            return [(sc, ec)]
+
+    needle = orig if orig in full_text else orig_clean
+    if needle in full_text:
+        return [(m.start(), m.end()) for m in re.finditer(re.escape(needle), full_text)]
+
+    if et not in _FLEX_DIGIT_TYPES:
+        return []
+    td = _digits_only(orig)
+    if not _digits_plausible_for_type(et, td):
+        return []
+    return _spans_matching_digit_sequence(full_text, td)
+
 
 def _token_ok(authorization: str | None) -> bool:
     expected = (os.getenv("WORKER_TOKEN") or "").strip()
@@ -257,59 +343,51 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
 def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, str]]:
     lang = language or "ru"
     system = (
-        "Ты — строгий AI-ассистент для поиска персональных данных (NER). "
-        "Отвечай только валидным JSON без пояснений до или после."
+        "Ты помечаешь персональные данные в расшифровке речи. "
+        "Цель — максимально не пропустить чувствительные фрагменты: при сомнении между «пропустить» и «включить» выбирай включение. "
+        "Ответ — только один JSON-объект, без текста до или после."
     )
-    user = f"""Язык текста: {lang}.
+    user = f"""Язык: {lang}.
 
-Текст расшифровки:
+Текст (индексы символов считаются по этой строке целиком):
 \"\"\"{user_text}\"\"\"
 
-Найди все фрагменты только по перечисленным ниже категориям (других типов нет).
-Используй СТРОГО следующие значения для поля replacement:
-- passport — серия и номер паспорта -> [ПАСПОРТ]
-- inn — ИНН (10 или 12 цифр) -> [ИНН]
+Категории (только они; других нет) и replacement:
+- passport — паспорт РФ: серия, номер, любая диктовка цифр (через запятые, пробелы, дефисы), даже если части разнесены словами «серия»/«номер» -> [ПАСПОРТ]
+- inn — ИНН 10 или 12 цифр -> [ИНН]
 - snils — СНИЛС -> [СНИЛС]
-- phone — телефон РФ/международный: «+7», слово «плюс»/«Плюс» перед семёркой, группы через пробелы и дефисы, как в стенограмме -> [ТЕЛЕФОН]
-- email — email -> [EMAIL]
-- address — адрес (улица, дом, квартира и т.п.) -> [АДРЕС]
+- phone — телефон (в т.ч. «+7», слово «плюс», паузы и группы цифр как в стенограмме) -> [ТЕЛЕФОН]
+- email -> [EMAIL]
+- address — почтовый/регистрационный адрес: улица, дом, квартира, при необходимости весь фрагмент до точки -> [АДРЕС]
 
-Правила:
-1. original — дословная подстрока текста (копипаст): каждый символ как в расшифровке, включая дефисы/тире и пробелы. Не исправляй ошибки STT.
-2. Извлекай только перечисленные типы. Номера банковских карт, CVV/CVC, срок действия карты, ПИН и т.п. не извлекай — таких категорий в списке нет (игнорируй их).
-3. passport — два варианта. (а) Части разнесены **словами** в речи («серия … 2720», потом «номер 857-815»): несколько записей passport — по одной на каждый непрерывный фрагмент («2720», «857-815»), не склеивай через слова. (б) Серия и номер идут **одним блоком** подряд — только цифры, дефисы и пробелы между группами, **без** слов между цифрами (например «988 -032», «78 -32-33»): **одна** запись passport, original = вся эта подстрока целиком от первой цифры до последней; не выделяй отдельно «988» и «-032».
-4. inn: только подстрока из цифр ИНН. phone: одна непрерывная цитата всего номера; если в тексте «Плюс 7…» или «+7…», в original — вместе с «Плюс»/«+» и разделителями, не только цифры. Наборы вроде «1-2-3» без признаков телефона не считай телефоном.
-5. Повторы: каждое вхождение — отдельная запись; при разном написании — отдельные original.
-6. Не выдумывай данные; при сомнении не включай.
-7. Если подходящих данных нет, верни {{"entities": []}}.
+Не извлекай: банковские карты, CVV, срок карты, ПИН (типов нет в списке). Извлекай только перечисленные категории.
 
-Формат ответа (строго один объект JSON, без полного переписывания текста — только список сущностей):
+Числа и границы:
+- Для passport, inn, snils, phone поле original может быть как дословной цитатой из текста, так и «нормализованной» строкой цифр (без пробелов) — бэкенд сопоставит по последовательности цифр. Главное — верный набор цифр и тип.
+- Для email и address original по возможности дословно из текста (подстрока).
+- Опционально: start_char и end_char — целые числа, полуинтервал [start, end) в символах от начала текста выше; заполняй, только если уверен в индексах, иначе опусти.
+- Каждое повторное упоминание — отдельный элемент в entities.
+- Мат и шум в тексте не отменяют извлечение.
+
+Если ничего из списка нет: {{"entities": []}}.
+
+Формат:
 {{
   "entities": [
     {{
       "entity_type": "phone",
-      "original": "+7 999 123-45-67",
-      "replacement": "[ТЕЛЕФОН]"
-    }},
-    {{
-      "entity_type": "phone",
-      "original": "Плюс 7-930 -735-5100",
+      "original": "79301234567",
       "replacement": "[ТЕЛЕФОН]"
     }},
     {{
       "entity_type": "passport",
-      "original": "988 -032",
+      "original": "988032",
       "replacement": "[ПАСПОРТ]"
     }},
     {{
-      "entity_type": "passport",
-      "original": "2720",
-      "replacement": "[ПАСПОРТ]"
-    }},
-    {{
-      "entity_type": "passport",
-      "original": "857-815",
-      "replacement": "[ПАСПОРТ]"
+      "entity_type": "address",
+      "original": "ул. Пушкина, д. 10",
+      "replacement": "[АДРЕС]"
     }}
   ]
 }}"""
@@ -373,19 +451,14 @@ def _normalize_entities(
         if not isinstance(orig, str) or not orig.strip():
             continue
         orig_clean = orig.strip()
-        if len(orig_clean) < 4:
+        min_len = 3 if et == "passport" else 4
+        if len(orig_clean) < min_len:
             continue
 
         rep = item.get("replacement")
         rep_s = str(rep) if rep is not None else "[REDACTED]"
 
-        needle = orig if orig in full_text else orig_clean
-        if needle not in full_text:
-            continue
-
-        pattern = re.escape(needle)
-        for match in re.finditer(pattern, full_text):
-            cs, ce = match.start(), match.end()
+        for cs, ce in _span_candidates_from_model(full_text, orig, orig_clean, et, item):
             if (cs, ce) in processed_spans:
                 continue
             processed_spans.add((cs, ce))
