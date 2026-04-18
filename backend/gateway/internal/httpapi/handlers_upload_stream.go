@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +18,47 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/minio/minio-go/v7"
 )
+
+// Safari/WebKit строго проверяют 206: Content-Length должен совпадать с диапазоном в Content-Range,
+// total в Content-Range — с реальным размером объекта. Прокси иногда портят Content-Length (gzip).
+var contentRangeHeaderRe = regexp.MustCompile(`(?i)^bytes\s+(\d+)-(\d+)/(\d+|\*)$`)
+
+func rewritePartialContentHeaders(h http.Header, objectSize int64) {
+	cr := strings.TrimSpace(h.Get("Content-Range"))
+	if cr == "" {
+		return
+	}
+	m := contentRangeHeaderRe.FindStringSubmatch(cr)
+	if m == nil {
+		return
+	}
+	start, err1 := strconv.ParseInt(m[1], 10, 64)
+	end, err2 := strconv.ParseInt(m[2], 10, 64)
+	if err1 != nil || err2 != nil || end < start || start < 0 {
+		return
+	}
+	cl := end - start + 1
+	if cl <= 0 {
+		return
+	}
+	totalPart := m[3]
+	if totalPart == "*" {
+		if objectSize >= 0 {
+			h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, objectSize))
+		}
+		h.Set("Content-Length", strconv.FormatInt(cl, 10))
+		return
+	}
+	total, err := strconv.ParseInt(totalPart, 10, 64)
+	if err != nil {
+		return
+	}
+	if objectSize >= 0 && total != objectSize {
+		total = objectSize
+	}
+	h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
+	h.Set("Content-Length", strconv.FormatInt(cl, 10))
+}
 
 func (h *UploadHandlers) RegisterStreamRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/uploads/{id}/original", BearerUserIDHeaderOrQuery(h.JWT, h.streamUploadOriginal))
@@ -84,8 +127,16 @@ func (h *UploadHandlers) pipeMinioObject(
 
 	core := minio.Core{Client: h.Store.Client}
 	opts := minio.GetObjectOptions{}
-	if rng := r.Header.Get("Range"); rng != "" {
+	rng := r.Header.Get("Range")
+	if rng != "" {
 		opts.Set("Range", rng)
+	}
+
+	var objectSize int64 = -1
+	if rng != "" {
+		if info, err := h.Store.Client.StatObject(ctx, bucket, objectKey, minio.StatObjectOptions{}); err == nil {
+			objectSize = info.Size
+		}
 	}
 
 	reader, _, hdr, err := core.GetObject(ctx, bucket, objectKey, opts)
@@ -99,10 +150,17 @@ func (h *UploadHandlers) pipeMinioObject(
 	if hdr.Get("Content-Range") != "" {
 		code = http.StatusPartialContent
 	}
+	// Не проксируем Content-/Transfer-Encoding: иначе прокси может отдать gzip и сломать длину тела для Safari.
+	w.Header().Del("Content-Encoding")
+	w.Header().Del("Transfer-Encoding")
+
 	for _, k := range []string{"Content-Type", "Content-Length", "Content-Range", "ETag", "Last-Modified"} {
 		if v := hdr.Get(k); v != "" {
 			w.Header().Set(k, v)
 		}
+	}
+	if hdr.Get("Content-Range") != "" {
+		rewritePartialContentHeaders(w.Header(), objectSize)
 	}
 	w.Header().Set("Accept-Ranges", "bytes")
 	if w.Header().Get("Content-Type") == "" && contentTypeFallback != "" {
