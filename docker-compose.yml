@@ -1,11 +1,7 @@
-# Запуск: docker compose up --build
+# Запуск: cp .env.example .env && docker compose up --build
 # Логи:   docker compose logs -f [gateway|runner|web|…]
-# Подробный старт шлюза: GATEWAY_LOG_VERBOSE=1 в env сервиса gateway
 #
-# Переменные для подстановки (создайте .env рядом с этим файлом):
-#   STT_BASE_URL, LLM_BASE_URL, REDACT_BASE_URL — HTTP-воркеры
-#   S3_PUBLIC_BASE_URL — URL MinIO для браузера, напр. http://<хост>:9000
-#   JWT_SECRET, WORKER_TOKEN — задайте свои значения в проде
+# Все значения подставляются из `.env` в корне репозитория (см. `.env.example`).
 
 x-logging: &default-logging
   driver: json-file
@@ -18,13 +14,17 @@ services:
     image: postgres:16-alpine
     logging: *default-logging
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: app
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-app}",
+        ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -32,6 +32,8 @@ services:
   redis:
     image: redis:7-alpine
     logging: *default-logging
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -43,11 +45,11 @@ services:
     logging: *default-logging
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin123}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - miniodata:/data
     healthcheck:
@@ -57,14 +59,13 @@ services:
       retries: 5
       start_period: 15s
 
-# TODO фронтенд
   web:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     logging: *default-logging
     ports:
-      - "8081:80"
+      - "${WEB_PORT:-8081}:80"
     depends_on:
       - gateway
 
@@ -73,28 +74,30 @@ services:
       context: ./backend/gateway
       dockerfile: Dockerfile
     logging: *default-logging
-    stop_grace_period: 40s
+    stop_grace_period: ${GATEWAY_STOP_GRACE_PERIOD:-40s}
     ports:
-      - "8080:8080"
+      - "${GATEWAY_PORT:-8080}:8080"
     environment:
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-postgres,redis,minio,gateway,web,runner,127.0.0.1,localhost}
-      GATEWAY_ADDR: ":8080"
-      GATEWAY_LOG_VERBOSE: "1"
-      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/app?sslmode=disable"
+      GATEWAY_ADDR: ${GATEWAY_ADDR:-:8080}
+      GATEWAY_LOG_VERBOSE: ${GATEWAY_LOG_VERBOSE:-1}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-app}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-change-me-dev-only-min-32-chars-please}
-      JWT_ACCESS_TTL_SEC: "900"
-      JWT_REFRESH_TTL_SEC: "604800"
-      REDIS_URL: "redis://redis:6379/0"
-      REDIS_AUDIO_QUEUE_KEY: "tulahack:queue:audio:process"
-      S3_ENDPOINT: "minio:9000"
-      S3_ACCESS_KEY: "minioadmin"
-      S3_SECRET_KEY: "minioadmin123"
-      S3_BUCKET: "app"
-      S3_USE_SSL: "false"
+      JWT_ACCESS_TTL_SEC: ${JWT_ACCESS_TTL_SEC:-900}
+      JWT_REFRESH_TTL_SEC: ${JWT_REFRESH_TTL_SEC:-604800}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_AUDIO_QUEUE_KEY: ${REDIS_AUDIO_QUEUE_KEY:-tulahack:queue:audio:process}
+      REDIS_JOB_STATUS_KEY_PREFIX: ${REDIS_JOB_STATUS_KEY_PREFIX:-}
+      REDIS_JOB_EVENTS_CHANNEL_PREFIX: ${REDIS_JOB_EVENTS_CHANNEL_PREFIX:-}
+      S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin123}
+      S3_BUCKET: ${S3_BUCKET:-app}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://127.0.0.1:9000}
-      SHUTDOWN_TIMEOUT_SEC: "30"
+      SHUTDOWN_TIMEOUT_SEC: ${SHUTDOWN_TIMEOUT_SEC:-30}
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,24 +116,26 @@ services:
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-postgres,redis,minio,gateway,web,runner,127.0.0.1,localhost}
-      REDIS_URL: "redis://redis:6379/0"
-      REDIS_AUDIO_QUEUE_KEY: "tulahack:queue:audio:process"
-      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/app?sslmode=disable"
-      S3_ENDPOINT: "minio:9000"
-      S3_ACCESS_KEY: "minioadmin"
-      S3_SECRET_KEY: "minioadmin123"
-      S3_BUCKET: "app"
-      S3_USE_SSL: "false"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_AUDIO_QUEUE_KEY: ${REDIS_AUDIO_QUEUE_KEY:-tulahack:queue:audio:process}
+      REDIS_BRPOP_TIMEOUT_SEC: ${REDIS_BRPOP_TIMEOUT_SEC:-5}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-app}?sslmode=disable
+      S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin123}
+      S3_BUCKET: ${S3_BUCKET:-app}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://127.0.0.1:9000}
-      # Задайте в .env (без коммита реальных хостов в репозиторий)
       STT_BASE_URL: ${STT_BASE_URL:-http://127.0.0.1:8001}
       LLM_BASE_URL: ${LLM_BASE_URL:-http://127.0.0.1:8081}
       REDACT_BASE_URL: ${REDACT_BASE_URL:-http://127.0.0.1:8082}
-      STT_HTTP_TIMEOUT_SEC: "600"
-      LLM_HTTP_TIMEOUT_SEC: "120"
-      REDACT_HTTP_TIMEOUT_SEC: "600"
-      LOG_LEVEL: "info"
-      # Обязательно задайте в .env; совпадает с WORKER_TOKEN на STT/LLM/Redact (иначе 401)
+      STT_HTTP_TIMEOUT_SEC: ${STT_HTTP_TIMEOUT_SEC:-600}
+      LLM_HTTP_TIMEOUT_SEC: ${LLM_HTTP_TIMEOUT_SEC:-120}
+      REDACT_HTTP_TIMEOUT_SEC: ${REDACT_HTTP_TIMEOUT_SEC:-600}
+      HTTP_MAX_ATTEMPTS: ${HTTP_MAX_ATTEMPTS:-5}
+      HTTP_RETRY_BASE_SEC: ${HTTP_RETRY_BASE_SEC:-1.0}
+      WORKER_QUEUE_RETRIES: ${WORKER_QUEUE_RETRIES:-4}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       WORKER_TOKEN: ${WORKER_TOKEN:-}
     depends_on:
       postgres:
@@ -142,4 +147,5 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
   miniodata:
