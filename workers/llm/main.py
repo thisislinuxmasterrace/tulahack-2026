@@ -257,12 +257,12 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
 def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, str]]:
     lang = language or "ru"
     system = (
-        "Ты помогаешь анонимизировать персональные данные в расшифровке речи. "
+        "Ты — строгий AI-ассистент для поиска персональных данных (NER). "
         "Отвечай только валидным JSON без пояснений до или после."
     )
     user = f"""Язык текста: {lang}.
 
-Текст расшифровки (это полный текст; дальше по нему же считаются позиции для озвучки):
+Текст расшифровки:
 \"\"\"{user_text}\"\"\"
 
 Найди все фрагменты по категориям (entity_type только латиницей):
@@ -273,25 +273,23 @@ def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, 
 - email — email
 - address — адрес (улица, дом, квартира и т.п.)
 
-Верни один JSON-объект формата:
+Правила:
+1. original должен ДОСЛОВНО совпадать с подстрокой текста (копипаст), включая дефисы без пробелов: «9337-375»; если номер в тексте слитный — не разбивай на два original.
+2. original должен быть максимально коротким: только сами данные (без «добрый день», «мой номер» и т.п.).
+3. passport: только серия/номер, не целое предложение; inn/phone — по возможности только цифры и знаки номера; для телефона сохраняй «+»/«плюс» только если так в тексте.
+4. Не дублируй одно и то же; не выдумывай; при сомнении не включай.
+5. Если персональных данных в тексте НЕТ, верни пустой массив: {{"entities": []}}.
+
+Формат ответа (строго один объект JSON, без полного переписывания текста — только список сущностей):
 {{
   "entities": [
     {{
-      "entity_type": "passport|inn|snils|phone|email|address",
-      "original": "минимальная дословная подстрока из текста выше",
-      "replacement": "краткая маска на русском, например [ПАСПОРТ]"
+      "entity_type": "phone",
+      "original": "+7 999 123-45-67",
+      "replacement": "[ТЕЛЕФОН]"
     }}
-  ],
-  "transcript_redacted": "весь текст с подставленными replacement вместо чувствительных фрагментов"
-}}
-
-Правила для original (важно для точной подстановки звука):
-- Должен дословно совпадать с подстрокой текста выше (копипаст из того же текста), включая дефисы без пробелов: «9337-375», «10-20», если в тексте номер слитный; не разбивай на два original.
-- Делай original максимально коротким: только сами ПДн (цифры, дефисы, при необходимости одно слово-метка), без приветствий и без лишних слов («добрый день», «уточнить» и т.п.).
-- passport: только серия/номер как в тексте (например «988 032»), не целое предложение и не «паспорт номер …», если в тексте номер уже выделен отдельно.
-- inn / phone: по возможности только цифры и знаки номера; для телефона сохраняй «Плюс»/«+» только если так в тексте.
-- Не дублируй одно и то же; не выдумывай; при сомнении не включай.
-- transcript_redacted — полная анонимизированная версия исходного текста."""
+  ]
+}}"""
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -340,6 +338,8 @@ def _normalize_entities(
 ) -> list[dict[str, Any]]:
     """Нормализует entities из JSON модели: границы в тексте и интервалы времени по сегментам STT."""
     out: list[dict[str, Any]] = []
+    processed_spans: set[tuple[int, int]] = set()
+
     for item in raw_entities:
         if not isinstance(item, dict):
             continue
@@ -350,35 +350,41 @@ def _normalize_entities(
         if not isinstance(orig, str) or not orig.strip():
             continue
         orig_clean = orig.strip()
+        if len(orig_clean) < 4:
+            continue
+
         rep = item.get("replacement")
         rep_s = str(rep) if rep is not None else "[REDACTED]"
 
-        idx = full_text.find(orig)
-        needle = orig
-        if idx < 0:
-            idx = full_text.find(orig_clean)
-            needle = orig_clean
-        if idx < 0:
+        needle = orig if orig in full_text else orig_clean
+        if needle not in full_text:
             continue
-        cs, ce = idx, idx + len(needle)
-        t0, t1 = _char_span_to_time(segments, full_text, cs, ce)
-        start_ms = _ms_from_sec_start(t0)
-        end_ms = _ms_from_sec_end(t1)
-        if end_ms <= start_ms:
-            end_ms = start_ms + 1
-        out.append(
-            {
-                "entity_type": et,
-                "original_text": full_text[cs:ce],
-                "replacement": rep_s,
-                "start_char": cs,
-                "end_char": ce,
-                "start_sec": round(t0, 3),
-                "end_sec": round(t1, 3),
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-            }
-        )
+
+        pattern = re.escape(needle)
+        for match in re.finditer(pattern, full_text):
+            cs, ce = match.start(), match.end()
+            if (cs, ce) in processed_spans:
+                continue
+            processed_spans.add((cs, ce))
+
+            t0, t1 = _char_span_to_time(segments, full_text, cs, ce)
+            start_ms = _ms_from_sec_start(t0)
+            end_ms = _ms_from_sec_end(t1)
+            if end_ms <= start_ms:
+                end_ms = start_ms + 1
+            out.append(
+                {
+                    "entity_type": et,
+                    "original_text": full_text[cs:ce],
+                    "replacement": rep_s,
+                    "start_char": cs,
+                    "end_char": ce,
+                    "start_sec": round(t0, 3),
+                    "end_sec": round(t1, 3),
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                }
+            )
     return out
 
 
@@ -436,8 +442,6 @@ async def anonymize(
         if rebuilt:
             # Склейка сегментов пробелом — как у aggregate text в faster-whisper.
             full_text = rebuilt
-    elif not full_text:
-        raise HTTPException(status_code=400, detail="empty transcript")
     if not full_text:
         raise HTTPException(status_code=400, detail="empty transcript")
 
@@ -454,22 +458,18 @@ async def anonymize(
         raw_entities = []
 
     entities = _normalize_entities(raw_entities, full_text, segments)
-    transcript_redacted = parsed.get("transcript_redacted")
-    if isinstance(transcript_redacted, str) and transcript_redacted.strip():
-        tr = transcript_redacted.strip()
-    else:
-        tr = _apply_redactions(
-            full_text,
-            [
-                {
-                    "original": e["original_text"],
-                    "replacement": e.get("replacement", "[REDACTED]"),
-                    "start_char": e["start_char"],
-                    "end_char": e["end_char"],
-                }
-                for e in entities
-            ],
-        )
+    tr = _apply_redactions(
+        full_text,
+        [
+            {
+                "original": e["original_text"],
+                "replacement": e.get("replacement", "[REDACTED]"),
+                "start_char": e["start_char"],
+                "end_char": e["end_char"],
+            }
+            for e in entities
+        ],
+    )
 
     report = _redaction_report(entities)
 
