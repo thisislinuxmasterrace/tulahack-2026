@@ -42,4 +42,10 @@ docker compose up --build
 
 Сервисы: **`web`** (nginx + статика Vue, порт **8081**), **`gateway`**, **`runner`**, **`web`**
 
-## Todo: демо проекта
+## Демо проекта
+
+TODO
+
+## Архитектура
+
+![Архитектура](architecture.svg)
