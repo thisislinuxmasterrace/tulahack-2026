@@ -44,8 +44,16 @@ let raf = 0
 
 const live = computed(() => !!(props.audioSrc && props.audioSrc.length > 0))
 
-const currentLabel = computed(() => formatTime(progress.value * effectiveDuration.value))
-const totalLabel = computed(() => formatTime(effectiveDuration.value))
+const currentLabel = computed(() => {
+  const dur = effectiveDuration.value
+  if (dur <= 0) return formatTime(0)
+  return formatTime(progress.value * dur)
+})
+const totalLabel = computed(() => {
+  const dur = effectiveDuration.value
+  if (dur <= 0) return '—'
+  return formatTime(dur)
+})
 
 /** До появления метаданных у `<audio>` — длительность из STT; затем длительность из файла (MP3). */
 const effectiveDuration = computed(() => {
@@ -55,7 +63,7 @@ const effectiveDuration = computed(() => {
   if (props.durationSec > 0) {
     return props.durationSec
   }
-  return 0.1
+  return 0
 })
 
 function syncDurationFromElement() {

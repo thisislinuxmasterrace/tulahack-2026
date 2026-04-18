@@ -106,7 +106,7 @@ const sanitizedText = computed(() => job.value?.transcript_redacted ?? '—')
 const stats = computed(() => statsFromReport(job.value?.redaction_report))
 const durationSec = computed(() => {
   const d = durationFromWhisper(job.value?.whisper_output)
-  return d > 0 ? d : 120
+  return d > 0 ? d : 0
 })
 const timeline = computed(() => timelineFromReport(job.value?.redaction_report, durationSec.value))
 
