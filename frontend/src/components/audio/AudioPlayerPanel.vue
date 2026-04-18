@@ -94,7 +94,12 @@ function togglePlay() {
     if (playing.value) {
       el.pause()
     } else {
-      void el.play()
+      const p = el.play()
+      if (p !== undefined) {
+        void p.catch(() => {
+          playing.value = false
+        })
+      }
     }
   } else {
     playing.value = !playing.value
@@ -199,7 +204,9 @@ onUnmounted(() => cancelAnimationFrame(raf))
       ref="audioRef"
       class="player__audio"
       :src="audioSrc || undefined"
-      preload="metadata"
+      preload="auto"
+      playsinline
+      webkit-playsinline
       @timeupdate="onTimeUpdate"
       @loadedmetadata="onLoadedMetadata"
       @durationchange="onDurationChange"
@@ -287,11 +294,18 @@ onUnmounted(() => cancelAnimationFrame(raf))
 </template>
 
 <style scoped>
+/* Safari не воспроизводит медиа в элементе 0×0; прячем как sr-only (незаметный 1×1). */
 .player__audio {
   position: absolute;
-  width: 0;
-  height: 0;
-  opacity: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  opacity: 0.01;
   pointer-events: none;
 }
 

@@ -22,6 +22,20 @@ func (h *UploadHandlers) RegisterStreamRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/uploads/{id}/redacted-audio", BearerUserIDHeaderOrQuery(h.JWT, h.streamUploadRedacted))
 }
 
+// normalizeStreamContentType — Safari хуже Chrome относится к MP3 с Content-Type: application/octet-stream.
+func normalizeStreamContentType(ct, filename string) string {
+	ct = strings.TrimSpace(ct)
+	ext := strings.ToLower(path.Ext(strings.TrimSpace(filename)))
+	if ext != ".mp3" {
+		return ct
+	}
+	low := strings.ToLower(ct)
+	if ct == "" || low == "application/octet-stream" || low == "binary/octet-stream" {
+		return "audio/mpeg"
+	}
+	return ct
+}
+
 func contentDispositionInlineOrAttachment(attachment bool, filename string) string {
 	base := path.Base(strings.TrimSpace(filename))
 	if base == "" || base == "." || base == "/" {
@@ -94,6 +108,10 @@ func (h *UploadHandlers) pipeMinioObject(
 	if w.Header().Get("Content-Type") == "" && contentTypeFallback != "" {
 		w.Header().Set("Content-Type", contentTypeFallback)
 	}
+	ctOut := normalizeStreamContentType(w.Header().Get("Content-Type"), filenameForCD)
+	if ctOut != "" {
+		w.Header().Set("Content-Type", ctOut)
+	}
 	w.Header().Set("Content-Disposition", contentDispositionInlineOrAttachment(attachment, filenameForCD))
 
 	w.WriteHeader(code)
@@ -153,7 +171,7 @@ func (h *UploadHandlers) streamUploadOriginal(w http.ResponseWriter, r *http.Req
 		if ct == "" {
 			ct = "application/octet-stream"
 		}
-		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Type", normalizeStreamContentType(ct, u.OriginalFilename))
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Disposition", contentDispositionInlineOrAttachment(attachment, u.OriginalFilename))
@@ -165,6 +183,7 @@ func (h *UploadHandlers) streamUploadOriginal(w http.ResponseWriter, r *http.Req
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
+	ct = normalizeStreamContentType(ct, u.OriginalFilename)
 	h.pipeMinioObject(w, r, u.Bucket, u.ObjectKey, ct, attachment, u.OriginalFilename)
 }
 
@@ -245,7 +264,7 @@ func (h *UploadHandlers) streamUploadRedacted(w http.ResponseWriter, r *http.Req
 		if ct == "" {
 			ct = "application/octet-stream"
 		}
-		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Type", normalizeStreamContentType(ct, dlName))
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Disposition", contentDispositionInlineOrAttachment(attachment, dlName))
@@ -257,5 +276,6 @@ func (h *UploadHandlers) streamUploadRedacted(w http.ResponseWriter, r *http.Req
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
+	ct = normalizeStreamContentType(ct, dlName)
 	h.pipeMinioObject(w, r, bucket, key, ct, attachment, dlName)
 }
