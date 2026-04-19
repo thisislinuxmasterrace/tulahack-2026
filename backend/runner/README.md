@@ -37,7 +37,9 @@ python main.py
 
 `WORKER_TOKEN` — **тот же** секрет, что на сервисах `workers/stt`, `llm`, `redact` (`Authorization: Bearer …`). Если на воркере токен задан, а в runner — пустой, STT ответит **401**. В Docker задайте переменную в `.env` рядом с `docker-compose.yml`.
 
-Таймауты (опционально): `STT_HTTP_TIMEOUT_SEC`, `LLM_HTTP_TIMEOUT_SEC`, `REDACT_HTTP_TIMEOUT_SEC` — по умолчанию 600 / 120 / 600 с.
+Таймауты (опционально): `STT_HTTP_TIMEOUT_SEC`, `LLM_HTTP_TIMEOUT_SEC`, `REDACT_HTTP_TIMEOUT_SEC` — по умолчанию 600 / 600 / 600 с. При долгой генерации на LM Studio при необходимости поднимите оба: `LM_HTTP_TIMEOUT_SEC` (воркер → LM Studio) и `LLM_HTTP_TIMEOUT_SEC` (runner → воркер).
+
+В POST к LLM по умолчанию из сегментов STT **не передаются** массивы `words` (только `start`/`end`/`text`), см. `LLM_REQUEST_STRIP_WORD_TIMESTAMPS` — иначе JSON раздувается; полный `whisper_output` по-прежнему хранится в БД.
 
 ## Docker
 

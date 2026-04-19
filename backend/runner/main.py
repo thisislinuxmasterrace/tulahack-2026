@@ -360,7 +360,8 @@ def load_settings() -> Settings:
         redact_base_url=os.getenv("REDACT_BASE_URL", "").rstrip("/"),
         worker_token=(os.getenv("WORKER_TOKEN") or "").strip(),
         stt_timeout_sec=float(os.getenv("STT_HTTP_TIMEOUT_SEC", "600")),
-        llm_timeout_sec=float(os.getenv("LLM_HTTP_TIMEOUT_SEC", "120")),
+        # По умолчанию 600 с — как LM_HTTP_TIMEOUT_SEC к LM Studio в воркере; при необходимости увеличьте в env.
+        llm_timeout_sec=float(os.getenv("LLM_HTTP_TIMEOUT_SEC", "600")),
         redact_timeout_sec=float(os.getenv("REDACT_HTTP_TIMEOUT_SEC", "600")),
         brpop_timeout_sec=int(os.getenv("REDIS_BRPOP_TIMEOUT_SEC", "5")),
         max_concurrency=max(1, int(os.getenv("RUNNER_MAX_CONCURRENCY", "32"))),
@@ -488,17 +489,59 @@ async def run_stt(
     return await http_call_with_retry("STT", once)
 
 
+def _llm_request_strip_word_timestamps() -> bool:
+    """Убирает words[] из сегментов в JSON к LLM (по умолчанию вкл.) — иначе тело POST раздувается до десятков МБ."""
+    return os.getenv("LLM_REQUEST_STRIP_WORD_TIMESTAMPS", "true").lower() in ("1", "true", "yes")
+
+
+def _segments_for_llm_payload(segments: Any, *, strip_words: bool) -> Any:
+    """
+    Сжимает сегменты для POST /v1/anonymize.
+
+    В промпт нейросети попадает только склеенный текст (full_text), не words — см. workers/llm _build_llm_messages.
+
+    Поле segments нужно воркеру для привязки сущностей ко времени аудио: достаточно start/end/text.
+    Без words workers/llm использует пропорциональный fallback в _local_span_to_times_in_segment (чуть грубее бип,
+    чем с word timestamps). Полные segments с words остаются в БД в whisper_output — UI и хранение не теряют их.
+    """
+    if not strip_words or not isinstance(segments, list) or not segments:
+        return segments
+    compact: list[dict[str, Any]] = []
+    for s in segments:
+        if not isinstance(s, dict):
+            continue
+        t = s.get("text")
+        compact.append(
+            {
+                "start": s.get("start"),
+                "end": s.get("end"),
+                "text": t if isinstance(t, str) else "",
+            }
+        )
+    return compact
+
+
 async def run_llm(
     settings: Settings,
     client: httpx.AsyncClient,
     stt_body: dict[str, Any],
 ) -> dict[str, Any]:
     url = f"{settings.llm_base_url}/v1/anonymize"
+    strip = _llm_request_strip_word_timestamps()
+    segs = _segments_for_llm_payload(stt_body.get("segments"), strip_words=strip)
     body = {
         "text": stt_body.get("text") or "",
-        "segments": stt_body.get("segments"),
+        "segments": segs,
         "language": stt_body.get("language"),
     }
+    txt = body["text"] or ""
+    nseg = len(segs) if isinstance(segs, list) else 0
+    LOG.info(
+        "LLM anonymize POST: text_len=%d segment_count=%d strip_word_timestamps=%s",
+        len(txt),
+        nseg,
+        strip,
+    )
 
     async def once() -> dict[str, Any]:
         r = await client.post(

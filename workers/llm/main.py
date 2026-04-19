@@ -12,6 +12,14 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="LLM PII Worker", version="0.1.0")
 
+# Без LM_MODEL в env везде используется Gemma 4 E4B (идентификатор для LM Studio).
+_DEFAULT_LM_MODEL = "google/gemma-4-e4b"
+
+
+def _resolved_lm_model() -> str:
+    return (os.getenv("LM_MODEL") or "").strip() or _DEFAULT_LM_MODEL
+
+
 ENTITY_TYPES = frozenset(
     {
         "passport",
@@ -399,9 +407,7 @@ def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, 
 
 async def _call_lm_studio(messages: list[dict[str, str]]) -> str:
     base = (os.getenv("LM_STUDIO_BASE_URL") or "http://127.0.0.1:1234/v1").rstrip("/")
-    model = (os.getenv("LM_MODEL") or "").strip()
-    if not model:
-        model = "google/gemma-4-e4b"
+    model = _resolved_lm_model()
     url = f"{base}/chat/completions"
     timeout = float(os.getenv("LM_HTTP_TIMEOUT_SEC", "600"))
     temp = float(os.getenv("LM_TEMPERATURE", "0.15"))
@@ -567,7 +573,7 @@ async def anonymize(
             "llm_entities": [],
             "redaction_report": empty_report,
             "segments": out_empty,
-            "model": (os.getenv("LM_MODEL") or "").strip() or "google/gemma-4-e4b",
+            "model": _resolved_lm_model(),
         }
 
     messages = _build_llm_messages(full_text, body.language)
@@ -626,7 +632,7 @@ async def anonymize(
         "llm_entities": entities,
         "redaction_report": report,
         "segments": out_segments,
-        "model": (os.getenv("LM_MODEL") or "").strip() or "gemma-3-4b-it",
+        "model": _resolved_lm_model(),
     }
 
 
