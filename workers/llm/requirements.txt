@@ -1,4 +1,9 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
-httpx>=0.27
 pydantic>=2.0
+# CPU-сборка torch: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+gliner2[local]>=2.1
+natasha>=1.6
+# pymorphy2 (зависимость natasha) импортирует pkg_resources
+setuptools<81

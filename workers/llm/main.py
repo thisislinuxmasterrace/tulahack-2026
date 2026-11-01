@@ -1,121 +1,33 @@
 from __future__ import annotations
 
-import json
 import math
 import os
-import re
 from typing import Annotated, Any, Optional
 
-import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
-app = FastAPI(title="LLM PII Worker", version="0.1.0")
+from ner import gliner_model_name
+from pipeline import detect
 
-# Без LM_MODEL в env везде используется Gemma 4 E4B (идентификатор для LM Studio).
-_DEFAULT_LM_MODEL = "google/gemma-4-e4b"
+app = FastAPI(title="PII Worker (GLiNER2 + Natasha + rules)", version="0.2.0")
 
-
-def _resolved_lm_model() -> str:
-    return (os.getenv("LM_MODEL") or "").strip() or _DEFAULT_LM_MODEL
-
-
-ENTITY_TYPES = frozenset(
-    {
-        "passport",
-        "inn",
-        "snils",
-        "phone",
-        "email",
-        "address",
-    }
-)
-
-# Типы, для которых можно восстановить span в тексте по последовательности цифр (модель могла нормализовать пробелы/запятые).
-_FLEX_DIGIT_TYPES = frozenset({"passport", "inn", "snils", "phone"})
+# Сущности без своей русской метки в контракте фронта/шлюза; REPLACEMENTS — подстановка в тексте.
+REPLACEMENTS = {
+    "passport": "[ПАСПОРТ]",
+    "inn": "[ИНН]",
+    "snils": "[СНИЛС]",
+    "phone": "[ТЕЛЕФОН]",
+    "email": "[EMAIL]",
+    "address": "[АДРЕС]",
+    "person": "[ИМЯ]",
+}
 
 
-def _digits_only(s: str) -> str:
-    return "".join(c for c in s if c.isdigit())
-
-
-def _digits_plausible_for_type(et: str, td: str) -> bool:
-    if not td:
-        return False
-    if et == "inn":
-        return len(td) in (10, 12)
-    if et == "snils":
-        return len(td) == 11
-    if et == "phone":
-        return len(td) >= 10
-    if et == "passport":
-        return len(td) >= 4
-    return False
-
-
-def _spans_matching_digit_sequence(full_text: str, target_digits: str) -> list[tuple[int, int]]:
-    """Подстроки, у которых подряд идущие цифры (с допустимыми разделителями между ними) дают target_digits."""
-    if not target_digits:
-        return []
-    n = len(full_text)
-    seen: set[tuple[int, int]] = set()
-    out: list[tuple[int, int]] = []
-    sep = frozenset(" \t\n,.;:-–—")
-    for i in range(n):
-        if not full_text[i].isdigit():
-            continue
-        buf: list[str] = []
-        span_start = i
-        for j in range(i, n):
-            ch = full_text[j]
-            if ch.isdigit():
-                buf.append(ch)
-                ds = "".join(buf)
-                if ds == target_digits:
-                    sp = (span_start, j + 1)
-                    if sp not in seen:
-                        seen.add(sp)
-                        out.append(sp)
-                    break
-                if len(ds) > len(target_digits):
-                    break
-            elif buf:
-                if ch.isspace() or ch in sep:
-                    continue
-                break
-    return out
-
-
-def _span_candidates_from_model(
-    full_text: str,
-    orig: str,
-    orig_clean: str,
-    et: str,
-    item: dict[str, Any],
-) -> list[tuple[int, int]]:
-    """Точное вхождение original; опционально start_char/end_char; иначе совпадение по цепочке цифр для числовых типов."""
-    sc = item.get("start_char")
-    ec = item.get("end_char")
-    if isinstance(sc, int) and isinstance(ec, int) and 0 <= sc < ec <= len(full_text):
-        sub = full_text[sc:ec]
-        if et in _FLEX_DIGIT_TYPES:
-            td_o = _digits_only(orig)
-            td_s = _digits_only(sub)
-            if td_o and td_o == td_s and _digits_plausible_for_type(et, td_s):
-                return [(sc, ec)]
-        elif orig in sub or sub.strip() == orig_clean:
-            return [(sc, ec)]
-
-    needle = orig if orig in full_text else orig_clean
-    if needle in full_text:
-        return [(m.start(), m.end()) for m in re.finditer(re.escape(needle), full_text)]
-
-    if et not in _FLEX_DIGIT_TYPES:
-        return []
-    td = _digits_only(orig)
-    if not _digits_plausible_for_type(et, td):
-        return []
-    return _spans_matching_digit_sequence(full_text, td)
+def _model_label() -> str:
+    use_natasha = os.getenv("USE_NATASHA", "1") != "0"
+    return gliner_model_name() + ("+natasha" if use_natasha else "") + "+rules"
 
 
 def _token_ok(authorization: str | None) -> bool:
@@ -329,164 +241,33 @@ def _apply_redactions(text: str, entities: list[dict[str, Any]]) -> str:
     return out
 
 
-def _extract_json_object(raw: str) -> dict[str, Any]:
-    raw = raw.strip()
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
-    if m:
-        raw = m.group(1).strip()
-    dec = json.JSONDecoder()
-    for i, ch in enumerate(raw):
-        if ch != "{":
-            continue
-        try:
-            obj, _ = dec.raw_decode(raw, i)
-            if isinstance(obj, dict):
-                return obj
-        except json.JSONDecodeError:
-            continue
-    raise ValueError("no JSON object in model output")
-
-
-# Упрощённый сценарий: весь текст в промпте; в проде нужны лимиты и защита от prompt injection.
-def _build_llm_messages(user_text: str, language: str | None) -> list[dict[str, str]]:
-    lang = language or "ru"
-    system = (
-        "Ты помечаешь персональные данные в расшифровке речи. "
-        "Цель — максимально не пропустить чувствительные фрагменты: при сомнении между «пропустить» и «включить» выбирай включение. "
-        "Ответ — только один JSON-объект, без текста до или после."
-    )
-    user = f"""Язык: {lang}.
-
-Текст (индексы символов считаются по этой строке целиком):
-\"\"\"{user_text}\"\"\"
-
-Категории (только они; других нет) и replacement:
-- passport — паспорт РФ: серия, номер, любая диктовка цифр (через запятые, пробелы, дефисы), даже если части разнесены словами «серия»/«номер» -> [ПАСПОРТ]
-- inn — ИНН 10 или 12 цифр -> [ИНН]
-- snils — СНИЛС -> [СНИЛС]
-- phone — телефон (в т.ч. «+7», слово «плюс», паузы и группы цифр как в стенограмме) -> [ТЕЛЕФОН]
-- email -> [EMAIL]
-- address — почтовый/регистрационный адрес: улица, дом, квартира, при необходимости весь фрагмент до точки -> [АДРЕС]
-
-Не извлекай: банковские карты, CVV, срок карты, ПИН (типов нет в списке). Извлекай только перечисленные категории.
-
-Числа и границы:
-- Для passport, inn, snils, phone поле original может быть как дословной цитатой из текста, так и «нормализованной» строкой цифр (без пробелов) — бэкенд сопоставит по последовательности цифр. Главное — верный набор цифр и тип.
-- Для email и address original по возможности дословно из текста (подстрока).
-- Опционально: start_char и end_char — целые числа, полуинтервал [start, end) в символах от начала текста выше; заполняй, только если уверен в индексах, иначе опусти.
-- Каждое повторное упоминание — отдельный элемент в entities.
-- Мат и шум в тексте не отменяют извлечение.
-
-Если ничего из списка нет: {{"entities": []}}.
-
-Формат:
-{{
-  "entities": [
-    {{
-      "entity_type": "phone",
-      "original": "79301234567",
-      "replacement": "[ТЕЛЕФОН]"
-    }},
-    {{
-      "entity_type": "passport",
-      "original": "988032",
-      "replacement": "[ПАСПОРТ]"
-    }},
-    {{
-      "entity_type": "address",
-      "original": "ул. Пушкина, д. 10",
-      "replacement": "[АДРЕС]"
-    }}
-  ]
-}}"""
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
-
-async def _call_lm_studio(messages: list[dict[str, str]]) -> str:
-    base = (os.getenv("LM_STUDIO_BASE_URL") or "http://127.0.0.1:1234/v1").rstrip("/")
-    model = _resolved_lm_model()
-    url = f"{base}/chat/completions"
-    timeout = float(os.getenv("LM_HTTP_TIMEOUT_SEC", "600"))
-    temp = float(os.getenv("LM_TEMPERATURE", "0.15"))
-    max_tokens = int(os.getenv("LM_MAX_TOKENS", "8192"))
-
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temp,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }
-
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(url, json=payload)
-        if r.status_code >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LM Studio HTTP {r.status_code}: {r.text[:2000]}",
-            )
-        data = r.json()
-
-    choice = (data.get("choices") or [{}])[0]
-    msg = choice.get("message") or {}
-    content = msg.get("content")
-    if not isinstance(content, str) or not content.strip():
-        raise HTTPException(status_code=502, detail="empty model response")
-    return content
-
-
-def _normalize_entities(
-    raw_entities: list[Any],
+def _spans_to_entities(
+    spans: list[Any],
     full_text: str,
     segments: list[SegmentIn],
 ) -> list[dict[str, Any]]:
-    """Нормализует entities из JSON модели: границы в тексте и интервалы времени по сегментам STT."""
+    """Span -> сущность контракта: символьные границы и интервалы времени по сегментам STT."""
     out: list[dict[str, Any]] = []
-    processed_spans: set[tuple[int, int]] = set()
-
-    for item in raw_entities:
-        if not isinstance(item, dict):
-            continue
-        et = str(item.get("entity_type", "")).strip().lower()
-        if et not in ENTITY_TYPES:
-            continue
-        orig = item.get("original")
-        if not isinstance(orig, str) or not orig.strip():
-            continue
-        orig_clean = orig.strip()
-        min_len = 3 if et == "passport" else 4
-        if len(orig_clean) < min_len:
-            continue
-
-        rep = item.get("replacement")
-        rep_s = str(rep) if rep is not None else "[REDACTED]"
-
-        for cs, ce in _span_candidates_from_model(full_text, orig, orig_clean, et, item):
-            if (cs, ce) in processed_spans:
-                continue
-            processed_spans.add((cs, ce))
-
-            t0, t1 = _char_span_to_time(segments, full_text, cs, ce)
-            start_ms = _ms_from_sec_start(t0)
-            end_ms = _ms_from_sec_end(t1)
-            if end_ms <= start_ms:
-                end_ms = start_ms + 1
-            out.append(
-                {
-                    "entity_type": et,
-                    "original_text": full_text[cs:ce],
-                    "replacement": rep_s,
-                    "start_char": cs,
-                    "end_char": ce,
-                    "start_sec": round(t0, 3),
-                    "end_sec": round(t1, 3),
-                    "start_ms": start_ms,
-                    "end_ms": end_ms,
-                }
-            )
+    for sp in spans:
+        cs, ce = sp.start, sp.end
+        t0, t1 = _char_span_to_time(segments, full_text, cs, ce)
+        start_ms = _ms_from_sec_start(t0)
+        end_ms = _ms_from_sec_end(t1)
+        if end_ms <= start_ms:
+            end_ms = start_ms + 1
+        out.append(
+            {
+                "entity_type": sp.type,
+                "original_text": full_text[cs:ce],
+                "replacement": REPLACEMENTS.get(sp.type, "[REDACTED]"),
+                "start_char": cs,
+                "end_char": ce,
+                "start_sec": round(t0, 3),
+                "end_sec": round(t1, 3),
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+            }
+        )
     return out
 
 
@@ -529,7 +310,7 @@ def _redact_segment_text(seg_text: str, entities: list[dict[str, Any]]) -> str:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "llm_pii"}
+    return {"status": "ok", "service": "pii_gliner"}
 
 
 @app.post("/v1/anonymize")
@@ -573,22 +354,11 @@ async def anonymize(
             "llm_entities": [],
             "redaction_report": empty_report,
             "segments": out_empty,
-            "model": _resolved_lm_model(),
+            "model": _model_label(),
         }
 
-    messages = _build_llm_messages(full_text, body.language)
-    raw_out = await _call_lm_studio(messages)
-
-    try:
-        parsed = _extract_json_object(raw_out)
-    except ValueError:
-        raise HTTPException(status_code=502, detail="model returned non-JSON output")
-
-    raw_entities = parsed.get("entities")
-    if not isinstance(raw_entities, list):
-        raw_entities = []
-
-    entities = _normalize_entities(raw_entities, full_text, segments)
+    spans = await run_in_threadpool(detect, full_text)
+    entities = _spans_to_entities(spans, full_text, segments)
     tr = _apply_redactions(
         full_text,
         [
@@ -632,7 +402,7 @@ async def anonymize(
         "llm_entities": entities,
         "redaction_report": report,
         "segments": out_segments,
-        "model": _resolved_lm_model(),
+        "model": _model_label(),
     }
 
 
