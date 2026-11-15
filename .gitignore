@@ -1,6 +1,8 @@
 # Dependencies
 node_modules/
 .venv/
+.venv-stt-eval/
+.stt-eval/
 venv/
 __pycache__/
 *.py[cod]
